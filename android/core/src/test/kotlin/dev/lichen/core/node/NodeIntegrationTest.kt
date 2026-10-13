@@ -188,8 +188,8 @@ class NodeIntegrationTest {
         val phone = Phone(listOf(py.hubAddr))
         try {
             runBlocking { phone.client.start() }
-            val reply = runBlocking { phone.client.node()!!.handle(dev.lichen.core.obj { put("type", kotlinx.serialization.json.JsonPrimitive("group_msg")) }) }
-            assertEquals("unknown type 'group_msg'", reply["error"].asString())
+            val reply = runBlocking { phone.client.node()!!.handle(dev.lichen.core.obj { put("type", kotlinx.serialization.json.JsonPrimitive("bogus")) }) }
+            assertEquals("unknown type 'bogus'", reply["error"].asString())
             assertEquals("false", reply["ok"].toString())
         } finally { phone.close() }
     }

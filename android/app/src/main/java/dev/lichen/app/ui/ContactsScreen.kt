@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.lichen.core.api.*
+import kotlinx.coroutines.launch
 
 @Composable
 fun HubChip(hubs: List<HubStatus>) {
@@ -47,8 +48,11 @@ fun HubChip(hubs: List<HubStatus>) {
 fun ContactsScreen(
     client: ChatClient, profileName: String, profileId: String, onSwitcher: () -> Unit,
     onOpenChat: (String) -> Unit, onNewChat: () -> Unit, onProfile: () -> Unit,
+    onOpenGroup: (String) -> Unit = {}, onNewGroup: () -> Unit = {},
 ) {
     val contacts by client.contacts.collectAsState()
+    val groups by client.groups.groups.collectAsState()
+    val scope = rememberCoroutineScope()
     val hubs by client.hubs.collectAsState()
     Scaffold(
         topBar = {
@@ -66,12 +70,16 @@ fun ContactsScreen(
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             BatteryCard()
-            if (contacts.isEmpty()) {
+            TextButton(onClick = onNewGroup, Modifier.padding(horizontal = 8.dp)) { Text("New group") }
+            if (contacts.isEmpty() && groups.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text("No chats yet. Tap New chat to say hello.", style = MaterialTheme.typography.bodyLarge)
                 }
             } else {
                 LazyColumn(contentPadding = PaddingValues(bottom = 88.dp)) {
+                    groupRows(groups, onOpenGroup,
+                        onAccept = { id -> scope.launch { client.groups.accept(id) } },
+                        onDecline = { id -> scope.launch { client.groups.decline(id) } })
                     items(contacts, key = { it.pubkey }) { c -> ContactRow(c) { onOpenChat(c.pubkey) } }
                 }
             }

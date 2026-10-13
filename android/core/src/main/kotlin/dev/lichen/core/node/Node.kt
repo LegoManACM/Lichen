@@ -17,6 +17,7 @@ import dev.lichen.core.seal
 import dev.lichen.core.secureRandom
 import dev.lichen.core.short
 import dev.lichen.core.store.DmStore
+import dev.lichen.core.store.GroupStore
 import dev.lichen.core.store.Outbox
 import dev.lichen.core.store.Phonebook
 import dev.lichen.core.store.TrustStore
@@ -52,7 +53,7 @@ import kotlin.math.abs
 // forward, msg (with IOU ids), dm_sync, outbox + flush.
 // TODO(phase 2): presence signals (_presence_round), sending typing/read signals, device_sync/vault_put/vault_get
 //   (sync_devices, sync_vault, _state_changed), the keepalive's device round.
-// TODO(phase 3): groups (group_msg/group_update/group_sync/group_leave), files (file_offer/file_get),
+// TODO(phase 3): files (file_offer/file_get),
 //   UDP hole punching (punch, _try_direct, direct paths in _req), group_handoff.
 
 const val RELAY_PREFIX = "relay:"
@@ -86,6 +87,8 @@ class Node(
     var onMessage: ((Record?, String, JsonObject) -> Unit)? = null,
     /** (kind, pubkey, count): "presence", "receipt", "typing", "owed". */
     var onEvent: ((String, String?, Int) -> Unit)? = null,
+    /** Group chats (store/GroupStore.kt); the node side is [groups]. */
+    val groupStore: GroupStore = GroupStore(ident, enc),
 ) {
     val relays: List<String> = relays.toList()
     /** Hubs are bootstrap addresses too (cli.py): we say hello to them at start. */
@@ -105,6 +108,13 @@ class Node(
     private val owedSeen = ConcurrentHashMap<String, MutableSet<String>>()  // IOU item ids already reported, per sender
     private val lastSeen = ConcurrentHashMap<String, Double>()
     val typing = ConcurrentHashMap<String, Double>()  // pubkey -> show "typing…" until this time (epoch seconds)
+
+    /** Group chats: managing groups, sending, group_sync, and handling the group_* requests (node/Groups.kt). */
+    val groups = Groups(groupStore, ident, phonebook, trust, GroupsHost(
+        deliver = ::deliver, requestPeer = ::requestPeer, encKey = ::encKey,
+        sendSealed = { kind, pk, fields -> sendSealed(kind, pk, fields) },
+        openSealed = ::openSealedMsg, seen = ::seen, spawn = ::spawn, log = { log(it) },
+    ))
 
     /** addrs: relay:<hub> for each hub, then adopted device addresses. */
     val addrs: List<String>
@@ -138,7 +148,8 @@ class Node(
                 for (addr in bootstrap) join(addr)
                 // Our address may differ from last run; tell everyone we already know about.
                 announce()
-                // TODO(phase 2): sync_devices(), sync_vault(); (phase 3): group sync.
+                // TODO(phase 2): sync_devices(), sync_vault().
+                groups.syncAll()
                 syncDms()
                 flushOutbox()
             } catch (e: CancellationException) {
@@ -541,6 +552,8 @@ class Node(
                 return OK
             }
 
+            "group_update", "group_leave", "group_msg", "group_sync", "group_handoff" -> return groups.handle(kind!!, msg)
+
             "msg" -> {
                 val inner = openSealedMsg(msg) ?: return failed("bad message")
                 val from = inner["from"].asString()!!
@@ -553,7 +566,7 @@ class Node(
                 return OK
             }
         }
-        // TODO(phase 2): device_sync, vault_put, vault_get. (phase 3): group_*, file_offer, file_get, group_handoff, punch, forward.
+        // TODO(phase 2): device_sync, vault_put, vault_get. (phase 3): file_offer, file_get, group_handoff, punch, forward.
         return failed("unknown type ${kind?.let { "'$it'" } ?: "None"}")
     }
 

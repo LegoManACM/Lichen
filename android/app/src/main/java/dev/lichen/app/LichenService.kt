@@ -88,6 +88,8 @@ class LichenService : Service() {
         s.launch {
             c.events.collect { e ->
                 if (e is ClientEvent.Incoming && Backend.currentChat.value != OpenChat(id, e.contact.pubkey)) notifyMessage(id, e)
+                if (e is ClientEvent.GroupIncoming && Backend.currentChat.value != OpenChat(id, "group:${e.group.id}")) notifyGroup(id, e)
+                if (e is ClientEvent.GroupInvite) notifyInvite(id, e)
             }
         }
         return Running(c, job)
@@ -146,6 +148,37 @@ class LichenService : Service() {
             .setContentIntent(openIntent(profileId, e.contact.pubkey))
             .build()
         NotificationManagerCompat.from(this).notify("$profileId/${e.contact.pubkey}".hashCode(), n)
+    }
+
+    private fun notifyGroup(profileId: String, e: ClientEvent.GroupIncoming) {
+        if (!canNotify()) return
+        val key = "group:${e.group.id}"
+        val title = if (profiles.infos.value.size > 1) "# ${e.group.name} -> you (${profiles.name(profileId) ?: "?"})" else "# ${e.group.name}"
+        val text = "${e.message.authorName}: ${e.message.text}"
+        val n = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setContentIntent(openIntent(profileId, key))
+            .build()
+        NotificationManagerCompat.from(this).notify("$profileId/$key".hashCode(), n)
+    }
+
+    private fun notifyInvite(profileId: String, e: ClientEvent.GroupInvite) {
+        if (!canNotify()) return
+        val key = "group:${e.group.id}"
+        val n = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle("Invitation to # ${e.group.name}")
+            .setContentText("${e.inviterName} invited you to a group")
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setContentIntent(openIntent(profileId, key))
+            .build()
+        NotificationManagerCompat.from(this).notify("$profileId/$key/invite".hashCode(), n)
     }
 
     companion object {

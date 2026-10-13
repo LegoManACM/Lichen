@@ -48,7 +48,7 @@ private fun LichenApp() {
     val activeId by profiles.active.collectAsState()
     val infos by profiles.infos.collectAsState()
     val clients by profiles.clients.collectAsState()
-    // Back stack of screens: "chat:<pk>", "info:<pk>", "people", "profile", "manage", "add:<new profile id>".
+    // Back stack of screens: "chat:<pk>", "info:<pk>", "group:<id>", "ginfo:<id>", "newgroup", "people", "profile", "manage", "add:<new profile id>".
     // Empty = the chat list.
     var stack by rememberSaveable { mutableStateOf(ArrayList<String>()) }
     var switcher by remember { mutableStateOf(false) }
@@ -89,7 +89,7 @@ private fun LichenApp() {
         if (o != null && infos.any { it.id == o.profileId }) {
             Backend.openChat.value = null
             if (o.profileId != profiles.active.value) profiles.switchTo(o.profileId)
-            stack = arrayListOf("chat:${o.pubkey}")
+            stack = arrayListOf(if (o.pubkey.startsWith("group:")) o.pubkey else "chat:${o.pubkey}")
         }
     }
 
@@ -135,6 +135,12 @@ private fun LichenApp() {
                 val pk = top.removePrefix("chat:")
                 ChatScreen(c, id, pk, onBack = ::pop, onInfo = { push("info:$pk") })
             }
+            top.startsWith("group:") -> {
+                val gid = top.removePrefix("group:")
+                GroupChatScreen(c, id, gid, onBack = ::pop, onInfo = { push("ginfo:$gid") })
+            }
+            top.startsWith("ginfo:") -> GroupInfoScreen(c, top.removePrefix("ginfo:"), onBack = ::pop, onGone = { stack = ArrayList() })
+            top == "newgroup" -> NewGroupScreen(c, onBack = ::pop, onCreated = { gid -> stack = arrayListOf("group:$gid") })
             top.startsWith("info:") -> InfoScreen(c, top.removePrefix("info:"), onBack = ::pop)
             top == "people" -> PeopleScreen(c, onBack = ::pop, onOpenChat = { pk ->
                 stack = arrayListOf("chat:$pk")
@@ -146,6 +152,7 @@ private fun LichenApp() {
             else -> ContactsScreen(
                 c, infos.firstOrNull { it.id == id }?.name ?: "Lichen", id, onSwitcher = { switcher = true },
                 onOpenChat = { push("chat:$it") }, onNewChat = { push("people") }, onProfile = { push("profile") },
+                onOpenGroup = { push("group:$it") }, onNewGroup = { push("newgroup") },
             )
         }
     }

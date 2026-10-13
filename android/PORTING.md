@@ -94,4 +94,10 @@ Device id: own random id in `device` (never copied from an export). An imported 
 
 ## Phases 2 and 3 (later)
 2. Requests screen, read/delivered receipts, typing, presence, device sync (`device_sync`, vault).
-3. Groups, files, UDP hole punching.
+3. Groups (done), files, UDP hole punching.
+
+### Groups (phase 3, done)
+`store/GroupStore.kt` is groups.py (same groups.json, `deviceState()`/`mergeDeviceState()`), `node/Groups.kt` is the
+groups section of node.py plus the `group_*` handlers, `node/GroupsClient.kt` + `api/GroupsApi.kt` the UI side
+(`ChatClient.groups`). One deviation: outbox/IOU item ids for fan-out items are `group_update:<gid>:<seq>:<pubkey>`
+(Python reuses one id for every recipient, so its outbox only queues the first absentee).

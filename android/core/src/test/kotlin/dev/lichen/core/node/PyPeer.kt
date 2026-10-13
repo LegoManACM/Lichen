@@ -84,6 +84,7 @@ class PyPeer(withUser: Boolean, val port: Int = freePort()) : AutoCloseable {
         is String -> JsonPrimitive(v)
         is Number -> JsonPrimitive(v)
         is Boolean -> JsonPrimitive(v)
+        is Collection<*> -> kotlinx.serialization.json.JsonArray(v.map { toJson(it) })
         else -> error("unsupported $v")
     }
 

@@ -136,7 +136,7 @@ private fun StatusMark(s: MessageStatus?) {
 }
 
 @Composable
-private fun Composer(onSend: (String) -> Unit) {
+fun Composer(onSend: (String) -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
     Surface(tonalElevation = 3.dp) {
         Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(8.dp), verticalAlignment = Alignment.Bottom) {

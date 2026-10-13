@@ -87,6 +87,7 @@ class FakeChatClient(private val settings: Settings, private val profileId: Stri
     override val contacts = MutableStateFlow<List<Contact>>(emptyList())
     override val people = MutableStateFlow<List<Contact>>(emptyList())
     override val events = MutableSharedFlow<ClientEvent>(extraBufferCapacity = 16)
+    override val groups: GroupsApi = FakeGroups(me)
 
     override fun messages(pubkey: String): StateFlow<List<ChatMessage>> = flow(pubkey)
 
@@ -179,4 +180,43 @@ class FakeChatClient(private val settings: Settings, private val profileId: Stri
     }
 
     override suspend fun syncNow() { delay(700); events.tryEmit(ClientEvent.Log("Synced")) }
+}
+
+/** A trivial in-memory GroupsApi: one group, one pending invite; actions just succeed. */
+class FakeGroups(private val me: String) : GroupsApi {
+    private fun member(name: String, owner: Boolean = false, you: Boolean = false) =
+        GroupMember((name + "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP").take(43), name, owner, you)
+    private val msgs = HashMap<String, MutableStateFlow<List<GroupMessage>>>()
+    private val now get() = System.currentTimeMillis() / 1000.0
+
+    override val groups = MutableStateFlow(listOf(
+        GroupInfo("g-invite", "Hiking", "x", "Bob", listOf(member("Bob", true), member("You", you = true)), GroupHistory.PRIVATE, false, true),
+        GroupInfo("g-devs", "Lichen devs", me, "You", listOf(member("You", true, true), member("Alice")), GroupHistory.SHARED, true, false),
+    ))
+
+    override fun messages(groupId: String): StateFlow<List<GroupMessage>> =
+        synchronized(msgs) { msgs.getOrPut(groupId) { MutableStateFlow(emptyList()) } }
+
+    private fun ok(id: String = "") = GroupResult.Ok(id)
+    override suspend fun create(name: String, members: List<String>, history: GroupHistory): GroupResult {
+        val g = GroupInfo("g-$name", name, me, "You", listOf(member("You", true, true)), history, true, false)
+        groups.update { it + g }
+        return ok(g.id)
+    }
+    override suspend fun accept(groupId: String): GroupResult { groups.update { l -> l.map { if (it.id == groupId) it.copy(pending = false) else it } }; return ok(groupId) }
+    override suspend fun decline(groupId: String): GroupResult { groups.update { l -> l.filter { it.id != groupId } }; return ok(groupId) }
+    override suspend fun leave(groupId: String, newOwner: String?) = decline(groupId)
+    override suspend fun addMember(groupId: String, pubkey: String) = ok(groupId)
+    override suspend fun removeMember(groupId: String, pubkey: String) = ok(groupId)
+    override suspend fun transfer(groupId: String, newOwner: String) = ok(groupId)
+    override suspend fun delete(groupId: String) = decline(groupId)
+    override suspend fun setHistory(groupId: String, history: GroupHistory): GroupResult {
+        groups.update { l -> l.map { if (it.id == groupId) it.copy(history = history) else it } }; return ok(groupId)
+    }
+    override suspend fun send(groupId: String, text: String): GroupResult {
+        (messages(groupId) as MutableStateFlow).update { it + GroupMessage("m${it.size}", groupId, me, "You", now, text, true) }
+        return ok(groupId)
+    }
+    override suspend fun sync(groupId: String?) = 0
+    override fun markRead(groupId: String) {}
 }

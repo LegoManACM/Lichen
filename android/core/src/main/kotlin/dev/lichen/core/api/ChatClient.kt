@@ -53,6 +53,10 @@ sealed interface ClientEvent {
     data class Incoming(val contact: Contact, val message: ChatMessage) : ClientEvent
     /** Something worth a line in a log/snackbar ("Alice moved", "relay unreachable"). */
     data class Log(val text: String) : ClientEvent
+    /** A group message arrived from someone else (for notifications). */
+    data class GroupIncoming(val group: GroupInfo, val message: GroupMessage) : ClientEvent
+    /** We were invited to a group. */
+    data class GroupInvite(val group: GroupInfo, val inviterName: String) : ClientEvent
 }
 
 interface ChatClient {
@@ -63,6 +67,8 @@ interface ChatClient {
     /** Everyone in the phonebook except us (for starting a new chat), sorted by name. */
     val people: StateFlow<List<Contact>>
     val events: SharedFlow<ClientEvent>
+    /** Group chats. */
+    val groups: GroupsApi
 
     /** Conversation with pubkey, oldest first. */
     fun messages(pubkey: String): StateFlow<List<ChatMessage>>

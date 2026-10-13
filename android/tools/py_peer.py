@@ -16,6 +16,16 @@ Commands (one JSON object per line):
                                                       (as if it had been sent but never arrived: chat sync must find it)
   {"cmd": "forget", "who": "user"|"hub", "peer": PK}  drop that node's history with peer (in memory only)
   {"cmd": "sync", "who": "user"|"hub", "peer": PK}    run dm_sync with peer -> {"event": "synced", "n": gained}
+  Groups (who = "user"|"hub", default "user"; `group` = group id or exact name; members are pubkeys):
+  {"cmd": "gcreate", "who", "name", "members": [PK], "history": "private"|"shared"} -> {"event": "group", "group_id"}
+  {"cmd": "gsend", "who", "group", "text"}            -> {"event": "gsent", "delivered": n, "others": n}
+  {"cmd": "gaccept"|"gdecline"|"gleave"|"gdelete", "who", "group"}    -> {"event": "ok"} (gaccept: {"event": "gaccepted", "n"})
+  {"cmd": "gadd"|"gremove", "who", "group", "pk"} / {"cmd": "ghistory", "who", "group", "history"}   -> {"event": "ok"}
+  {"cmd": "gtransfer", "who", "group", "to": PK, "leave": bool}   -> {"event": "gtransferred", "result"}
+  {"cmd": "gmessages", "who", "group"}                -> {"event": "gmessages", "messages": [{id, from, ts, text}]}
+  {"cmd": "glist", "who"}                             -> {"event": "glist", "groups": [{group_id, name, owner, members, history, status, deleted, epoch}]}
+  {"cmd": "gsync", "who"[, "group"]}                  -> {"event": "gsynced", "n"}
+  {"cmd": "gforget", "who", "group"}                  drop that node's copy of the group's messages (in memory only)
   {"cmd": "quit"}
 Events: {"event": "ready", ...whoami}, {"event": "message", "node": "user"|"hub", "from": PK, "text": ..., "id": ...}
 """
@@ -58,9 +68,23 @@ class Peer:
             emit(event="message", node=who, **{"from": env["from"]}, text=text, id=env.get("id"))
         return cb
 
+    def _on_group_message(self, who: str):
+        def cb(group, rec, text, inner, live):
+            emit(event="group_message", node=who, group=group.group_id if group else None, text=text, live=live,
+                 **{"from": inner["from"]})
+        return cb
+
+    def _on_event(self, who: str):
+        def cb(kind, details):
+            if kind.startswith("group_"):
+                g = details.get("group")
+                emit(event="group_event", node=who, kind=kind, group=getattr(g, "group_id", None))
+        return cb
+
     async def start_hub(self) -> None:
         self.hub = Node.from_dir(self.dir / "hub", "hub", host="127.0.0.1", port=self.args.port, direct=True, stun=[],
-                                 on_message=self._on_message("hub"), log=lambda s: log("[hub] " + s))
+                                 on_message=self._on_message("hub"),
+                                 on_group_message=self._on_group_message("hub"), on_event=self._on_event("hub"), log=lambda s: log("[hub] " + s))
         await self.hub.start()
 
     async def start_user(self) -> None:
@@ -68,6 +92,7 @@ class Peer:
             return
         self.user = Node.from_dir(self.dir / "user", self.args.user, relay=self.hub_addr, bootstrap=[self.hub_addr],
                                   direct=False, stun=[], on_message=self._on_message("user"),
+                                  on_group_message=self._on_group_message("user"), on_event=self._on_event("user"),
                                   log=lambda s: log("[user] " + s))
         await self.user.start()
 
@@ -133,8 +158,67 @@ class Peer:
             emit(event="synced", n=await self._node(cmd.get("who", "user")).sync_dm(cmd["peer"]))
         elif kind == "quit":
             return False
+        elif await self.group_command(cmd):
+            pass
         else:
             emit(event="error", error=f"unknown command {kind!r}")
+        return True
+
+    async def group_command(self, cmd: dict) -> bool:
+        kind = cmd.get("cmd")
+        if kind not in ("gcreate", "gsend", "gaccept", "gdecline", "gleave", "gdelete", "gadd", "gremove", "ghistory",
+                        "gtransfer", "gmessages", "glist", "gsync", "gforget"):
+            return False
+        node = self._node(cmd.get("who", "user"))
+        if node is None:
+            emit(event="error", error="that node is not running")
+            return True
+        gid = None
+        if cmd.get("group"):
+            rec = node.groups.get(cmd["group"]) or next(iter(node.groups.find(cmd["group"])), None)
+            if rec is None:
+                raise ValueError(f"unknown group {cmd['group']!r}")
+            gid = rec.group_id
+        if kind == "gcreate":
+            g = await node.create_group(cmd["name"], list(cmd.get("members") or []), cmd.get("history", "private"))
+            emit(event="group", group_id=g.group_id, seq=g.seq)
+        elif kind == "gsend":
+            delivered, others = await node.send_group(gid, cmd["text"])
+            emit(event="gsent", delivered=delivered, others=others)
+        elif kind == "gaccept":
+            emit(event="gaccepted", n=await node.accept_group(gid))
+        elif kind == "gdecline":
+            await node.leave_group(gid, "declined")
+            emit(event="ok", cmd=kind, group_id=gid)
+        elif kind == "gleave":
+            await node.leave_group(gid)
+            emit(event="ok", cmd=kind, group_id=gid)
+        elif kind == "gdelete":
+            await node.delete_group(gid)
+            emit(event="ok", cmd=kind, group_id=gid)
+        elif kind == "gadd":
+            await node.add_member(gid, cmd["pk"])
+            emit(event="ok", cmd=kind, group_id=gid)
+        elif kind == "gremove":
+            await node.remove_member(gid, cmd["pk"])
+            emit(event="ok", cmd=kind, group_id=gid)
+        elif kind == "ghistory":
+            await node.set_history(gid, cmd["history"])
+            emit(event="ok", cmd=kind, group_id=gid)
+        elif kind == "gtransfer":
+            emit(event="gtransferred", result=await node.transfer_group(gid, cmd["to"], bool(cmd.get("leave"))))
+        elif kind == "gmessages":
+            emit(event="gmessages", messages=[{"id": m["id"], "from": m["from"], "ts": m["ts"], "text": m["text"]}
+                                              for m in node.groups.messages(gid)])
+        elif kind == "glist":
+            emit(event="glist", groups=[{"group_id": g.group_id, "name": g.name, "owner": g.owner, "members": g.members,
+                                         "history": g.history, "status": node.groups.status.get(g.group_id),
+                                         "deleted": g.deleted, "epoch": g.epoch} for g in node.groups.all()])
+        elif kind == "gsync":
+            emit(event="gsynced", n=await (node.sync_group(gid) if gid else node.sync_all()))
+        elif kind == "gforget":
+            node.groups.logs[gid] = {}
+            emit(event="ok", cmd=kind)
         return True
 
     async def run(self) -> None:

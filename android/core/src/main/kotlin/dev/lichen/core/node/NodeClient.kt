@@ -7,6 +7,7 @@ import dev.lichen.core.api.ChatClient
 import dev.lichen.core.api.ChatMessage
 import dev.lichen.core.api.ClientEvent
 import dev.lichen.core.api.Contact
+import dev.lichen.core.api.GroupsApi
 import dev.lichen.core.api.HubStatus
 import dev.lichen.core.api.MessageStatus
 import dev.lichen.core.api.Profile
@@ -24,6 +25,7 @@ import dev.lichen.core.parseObject
 import dev.lichen.core.secureRandom
 import dev.lichen.core.short
 import dev.lichen.core.store.DmStore
+import dev.lichen.core.store.GroupStore
 import dev.lichen.core.store.Outbox
 import dev.lichen.core.store.Phonebook
 import dev.lichen.core.store.TrustStore
@@ -63,6 +65,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
     private class Loaded(
         val settings: Settings, val ident: Identity, val enc: EncKey, val device: String,
         val phonebook: Phonebook, val dms: DmStore, val outbox: Outbox, val trust: TrustStore,
+        val groupStore: GroupStore,
     )
 
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)  // lives as long as the client object
@@ -78,6 +81,8 @@ class NodeClient(private val dataDir: File) : ChatClient {
     override val contacts: StateFlow<List<Contact>> = _contacts
     override val people: StateFlow<List<Contact>> = _people
     override val events: SharedFlow<ClientEvent> = _events
+    private val groupsClient = GroupsClient(dataDir, ioScope, _events) { runningNode }
+    override val groups: GroupsApi = groupsClient
 
     private val chats = ConcurrentHashMap<String, MutableStateFlow<List<ChatMessage>>>()
     private val unread = ConcurrentHashMap<String, Int>()
@@ -110,12 +115,14 @@ class NodeClient(private val dataDir: File) : ChatClient {
         val enc = EncKey.loadOrCreate(File(dataDir, "enckey"))
         val l = Loaded(settings, ident, enc, deviceId(dataDir),
             Phonebook(File(dataDir, "phonebook.json")), DmStore(File(dataDir, "dms.json")),
-            Outbox(File(dataDir, "outbox.json")), TrustStore(File(dataDir, "trust.json")))
+            Outbox(File(dataDir, "outbox.json")), TrustStore(File(dataDir, "trust.json")),
+            GroupStore(ident, enc, File(dataDir, "groups.json")))
         parseObject(File(dataDir, "unread.json").takeIf { it.exists() }?.readText(Charsets.UTF_8) ?: "{}")?.forEach { (k, v) ->
             v.asLong()?.takeIf { it > 0 }?.let { unread[k] = it.toInt() }
         }
         val hook = { markDirty() }
-        l.phonebook.onChange = hook; l.dms.onChange = hook; l.outbox.onChange = hook; l.trust.onChange = hook
+        l.phonebook.onChange = hook; l.dms.onChange = hook; l.outbox.onChange = hook; l.trust.onChange = hook; l.groupStore.onChange = hook
+        groupsClient.bind(l.groupStore, ident, l.phonebook, l.trust)
         loaded = l
         _profile.value = Profile(ident.pubkey, settings.name, settings.hubs, fingerprint(ident.pubkey), l.device)
         _hubs.value = settings.hubs.map { HubStatus(it, false) }
@@ -133,6 +140,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
             run = scope
             val n = Node(l.settings.name, l.ident, l.enc, l.phonebook, l.dms, l.outbox, l.trust,
                 relays = l.settings.hubs, device = l.device,
+                groupStore = l.groupStore,
                 onMessage = { rec, text, m -> onIncoming(l, rec, text, m) },
                 onEvent = { kind, pk, count ->
                     if (kind == "owed" && pk != null) {
@@ -142,6 +150,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
                 })
             node = n
             runningNode = n
+            groupsClient.attach(n)
             // The hubs row follows each relay connection; online dots expire with time.
             n.onRelayClient = { c -> scope.launch { c.connected.collect { publishHubs(n) } } }
             scope.launch { while (true) { delay(15_000); markDirty() } }
@@ -177,6 +186,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
         withContext(Dispatchers.IO) {
             for (addr in n.bootstrap) n.join(addr)
             n.announce()
+            n.groups.syncAll()
             n.syncDms()
             n.flushOutbox()
         }
@@ -293,6 +303,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
         val l = loaded ?: return
         val me = l.ident.pubkey
         for ((pk, flow) in chats) flow.value = messagesOf(l, pk)
+        groupsClient.recompute()
         val keys = (l.trust.keys("trusted") + l.dms.peers()).filter { it != me && !l.trust.blocked(it) }.distinct()
         _contacts.value = keys.map { contactFor(l, it) }
             .sortedWith(compareByDescending<Contact> { it.lastMessage?.ts ?: 0.0 }.thenBy { it.displayName.lowercase() })
