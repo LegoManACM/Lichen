@@ -4,6 +4,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -19,9 +20,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import dev.lichen.app.Backend
+import dev.lichen.app.ui.theme.*
 import dev.lichen.core.api.SetupResult
 import dev.lichen.core.api.Settings
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +36,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun OnboardingScreen(dataDir: java.io.File, onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
     var mode by rememberSaveable { mutableStateOf("") }
-    Scaffold { pad ->
+    Scaffold(containerColor = Slab.colors.ground) { pad ->
         Column(
             Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp)
                 .imePadding(),
@@ -48,36 +53,46 @@ fun OnboardingScreen(dataDir: java.io.File, onDone: () -> Unit, onCancel: (() ->
 
 @Composable
 private fun Welcome(onCancel: (() -> Unit)?, choose: (String) -> Unit) {
+    val p = Slab.colors
     if (onCancel != null) {
-        IconButton(onClick = onCancel) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+        SlabIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onCancel, bordered = false)
     } else Spacer(Modifier.height(32.dp))
-    Text("Lichen", style = MaterialTheme.typography.displayMedium, color = MaterialTheme.colorScheme.primary)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        LichenMark(48.dp)
+        Text("Lichen", fontWeight = FontWeight.Bold, fontSize = 40.sp, letterSpacing = (-0.02).em, color = p.text)
+    }
+    Box(Modifier.width(64.dp).height(3.dp).background(p.accent))
     Text(
         "Private chat that belongs to you. Messages are end-to-end encrypted, and there is no account or server that owns your conversations.",
-        style = MaterialTheme.typography.bodyLarge,
+        fontSize = 16.sp, lineHeight = 23.sp, color = p.subtle,
     )
     Spacer(Modifier.height(8.dp))
-    ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("I use Lichen on my computer", style = MaterialTheme.typography.titleMedium)
-            Text("Bring your identity, contacts and chats over to this phone.", style = MaterialTheme.typography.bodyMedium)
-            Button(onClick = { choose("import") }) { Text("Import from my computer") }
+    SlabCard(Modifier.fillMaxWidth().padding(end = 4.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionLabel("ALREADY USE LICHEN")
+            Text("I use Lichen on my computer", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = p.text)
+            Text("Bring your identity, contacts and chats over to this phone.", fontSize = 14.sp, color = p.subtle)
+            SlabButton("Import from my computer", { choose("import") }, Modifier.fillMaxWidth().padding(top = 4.dp))
         }
     }
-    ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("New identity", style = MaterialTheme.typography.titleMedium)
-            Text("I'm new here. Make me a fresh identity on this phone.", style = MaterialTheme.typography.bodyMedium)
-            FilledTonalButton(onClick = { choose("new") }) { Text("Start fresh") }
+    SlabCard(Modifier.fillMaxWidth().padding(end = 4.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionLabel("NEW HERE")
+            Text("New identity", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = p.text)
+            Text("I'm new here. Make me a fresh identity on this phone.", fontSize = 14.sp, color = p.subtle)
+            SlabButton("Start fresh", { choose("new") }, Modifier.fillMaxWidth().padding(top = 4.dp), SlabButtonStyle.Secondary)
         }
     }
 }
 
 @Composable
 private fun Back(onBack: () -> Unit, title: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-        Text(title, style = MaterialTheme.typography.headlineSmall)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SlabIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, bordered = false)
+            Text(title, fontWeight = FontWeight.Bold, fontSize = 21.sp, color = Slab.colors.text)
+        }
+        Box(Modifier.fillMaxWidth().height(3.dp).background(Slab.colors.accent))
     }
 }
 
@@ -107,25 +122,28 @@ private fun ImportForm(dataDir: java.io.File, onBack: () -> Unit, onDone: () -> 
     Text(
         "An export is one file that holds your identity (your keys, name and hubs), protected by a passphrase. " +
             "On your computer run:",
-        style = MaterialTheme.typography.bodyMedium,
+        fontSize = 14.sp, lineHeight = 20.sp, color = Slab.colors.subtle,
     )
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.small) {
-        Text("lichen --export me.lichen", Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
-    }
+    Text(
+        "$ lichen --export me.lichen", Modifier.fillMaxWidth().background(Slab.colors.bar).slabBorder(Slab.colors.edge).padding(12.dp),
+        fontFamily = Slab.mono, fontSize = 14.sp, color = Slab.colors.accent,
+    )
     Text(
         "Then copy me.lichen to this phone (cloud drive, USB cable, or a messenger to yourself) and pick it here.",
-        style = MaterialTheme.typography.bodyMedium,
+        fontSize = 14.sp, lineHeight = 20.sp, color = Slab.colors.subtle,
     )
-    OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }, enabled = !busy) {
-        Text(if (uri == null) "Choose me.lichen" else "Chosen: $fileName")
-    }
+    SlabButton(
+        if (uri == null) "Choose me.lichen" else "Chosen: $fileName", { picker.launch(arrayOf("*/*")) },
+        Modifier.fillMaxWidth(), SlabButtonStyle.Card, enabled = !busy,
+    )
     OutlinedTextField(
         pass, { pass = it; error = null }, Modifier.fillMaxWidth(), label = { Text("Export passphrase") },
         singleLine = true, visualTransformation = PasswordVisualTransformation(),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), enabled = !busy,
-        isError = error != null, supportingText = { error?.let { Text(it) } },
+        isError = error != null, supportingText = { error?.let { Text(it) } }, colors = slabFieldColors(),
     )
-    Button(
+    SlabButton(
+        if (busy) "Importing…" else "Import", modifier = Modifier.fillMaxWidth().padding(end = 4.dp), height = 52.dp, shadow = 4.dp,
         enabled = uri != null && pass.isNotEmpty() && !busy,
         onClick = {
             busy = true; error = null
@@ -145,13 +163,7 @@ private fun ImportForm(dataDir: java.io.File, onBack: () -> Unit, onDone: () -> 
                 }
             }
         },
-    ) {
-        if (busy) {
-            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            Spacer(Modifier.width(8.dp))
-            Text("Importing…")
-        } else Text("Import")
-    }
+    )
 }
 
 @Composable
@@ -167,24 +179,24 @@ private fun NewForm(dataDir: java.io.File, onBack: () -> Unit, onDone: () -> Uni
     Text(
         "Pick the name people will see, and the address of a hub. A hub is a small server that passes your encrypted " +
             "messages along and holds them while you're offline; it can't read them.",
-        style = MaterialTheme.typography.bodyMedium,
+        fontSize = 14.sp, lineHeight = 20.sp, color = Slab.colors.subtle,
     )
-    OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Your name") }, singleLine = true, enabled = !busy)
+    OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Your name") }, singleLine = true, enabled = !busy, colors = slabFieldColors())
     hubs.forEachIndexed { i, h ->
         OutlinedTextField(
             h, { hubs[i] = it }, Modifier.fillMaxWidth(), label = { Text(if (i == 0) "Hub address" else "Another hub") },
             placeholder = { Text("wss://…") }, singleLine = true, enabled = !busy,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), colors = slabFieldColors(),
+            textStyle = LocalTextStyle.current.copy(fontFamily = Slab.mono),
             trailingIcon = if (hubs.size > 1) {
                 { IconButton({ hubs.removeAt(i) }) { Icon(Icons.Default.Close, "Remove hub") } }
             } else null,
         )
     }
-    TextButton(onClick = { hubs.add("") }, enabled = !busy) {
-        Icon(Icons.Default.Add, null); Spacer(Modifier.width(4.dp)); Text("Add another hub")
-    }
+    SlabButton("Add another hub", { hubs.add("") }, Modifier.fillMaxWidth(), SlabButtonStyle.Dashed, enabled = !busy, icon = Icons.Default.Add)
     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-    Button(
+    SlabButton(
+        if (busy) "Creating…" else "Create my identity", modifier = Modifier.fillMaxWidth().padding(end = 4.dp), height = 52.dp, shadow = 4.dp,
         enabled = !busy,
         onClick = {
             val hs = hubs.map { it.trim() }.filter { it.isNotEmpty() }
@@ -201,5 +213,5 @@ private fun NewForm(dataDir: java.io.File, onBack: () -> Unit, onDone: () -> Uni
                 }
             }
         },
-    ) { Text("Create my identity") }
+    )
 }

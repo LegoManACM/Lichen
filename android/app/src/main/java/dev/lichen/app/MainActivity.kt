@@ -17,6 +17,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import dev.lichen.app.ui.*
+import dev.lichen.app.ui.theme.LichenTheme
 import dev.lichen.core.api.Settings
 import kotlinx.coroutines.launch
 
@@ -48,7 +49,8 @@ private fun LichenApp() {
     val activeId by profiles.active.collectAsState()
     val infos by profiles.infos.collectAsState()
     val clients by profiles.clients.collectAsState()
-    // Back stack of screens: "chat:<pk>", "info:<pk>", "people", "profile", "manage", "add:<new profile id>".
+    // Back stack of screens: "chat:<pk>", "info:<pk>", "people", "profile", "colors", "manage",
+    // "add:<new profile id>".
     // Empty = the chat list.
     var stack by rememberSaveable { mutableStateOf(ArrayList<String>()) }
     var switcher by remember { mutableStateOf(false) }
@@ -138,13 +140,15 @@ private fun LichenApp() {
             top.startsWith("info:") -> InfoScreen(c, top.removePrefix("info:"), onBack = ::pop)
             top == "requests" -> RequestsScreen(c, onBack = ::pop, onOpenChat = { pk -> push("chat:$pk") })
             top == "debuglog" -> DebugLogScreen(c, onBack = ::pop)
+            top == "colors" -> PaletteScreen(onBack = ::pop)
             top == "people" -> PeopleScreen(c, onBack = ::pop, onOpenChat = { pk ->
                 stack = arrayListOf("chat:$pk")
             })
             top == "profile" -> ProfileScreen(c, onBack = ::pop, onSaveHubs = { name, hubs ->
                 // The profile's client is stopped, its settings saved and a new client opened; the service starts it.
                 scope.launch { profiles.saveSettings(id, Settings(name, hubs)) }
-            }, onDelete = { deleting = infos.firstOrNull { it.id == id } }, onDebugLog = { push("debuglog") })
+            }, onDelete = { deleting = infos.firstOrNull { it.id == id } }, onDebugLog = { push("debuglog") },
+                onColors = { push("colors") }, onSwitchProfile = { switcher = true })
             else -> ContactsScreen(
                 c, infos.firstOrNull { it.id == id }?.name ?: "Lichen", id, onSwitcher = { switcher = true },
                 onOpenChat = { push("chat:$it") }, onNewChat = { push("people") }, onProfile = { push("profile") },
