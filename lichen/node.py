@@ -157,6 +157,8 @@ class Node:
         self.typing: dict[str, float] = {}  # pubkey -> show "typing…" until this time
         self._typing_sent: dict[str, float] = {}
         self._read_sent: dict[str, float] = {}
+        self._devsync_pending = False
+        self.groups.on_change = self.trust.on_change = self._state_changed
 
     @classmethod
     def from_dir(cls, data_dir: Path, name: str, downloads: Path | None = None, passphrase: str | None = None,
@@ -224,6 +226,7 @@ class Node:
         # Our address may differ from last run; tell everyone we already know about.
         await self.announce()
         # Catch up: group messages, gaps in chats, and anything we owe people who are online now.
+        await self.sync_devices()
         await self.sync_all()
         await self.sync_dms()
         await self.flush_outbox()
@@ -338,6 +341,8 @@ class Node:
             await asyncio.gather(*(self.udp.keepalive(pk) for pk in list(self.udp.paths)))
             if tick % OUTBOX_EVERY == 0 and self.outbox.items:
                 await self.flush_outbox()
+            if tick % OUTBOX_EVERY == 0 and self.relays:
+                await self.sync_devices()
             if tick % PRESENCE_EVERY == 0:
                 await self._presence_round()
 
@@ -622,6 +627,65 @@ class Node:
         peers = [pk for pk in set(self.dms.convos) | contacts if not self.trust.blocked(pk) and pk != self.ident.pubkey]
         return sum(await asyncio.gather(*(self.sync_dm(pk) for pk in peers)))
 
+    # --- syncing your own devices ------------------------------------------------------------------
+    # Your devices share a key but each keeps its own state. They swap groups (records, keys, your
+    # membership status, recent messages) and trust/nicknames/verifications, sealed to your own key;
+    # whichever changed something last wins. Chats don't need this: they sync from the other person.
+
+    def device_state(self) -> dict:
+        return {"groups": self.groups.device_state(), "trust": self.trust.device_state()}
+
+    def _signed_state(self) -> dict:
+        inner = {"from": self.ident.pubkey, "to": self.ident.pubkey, "ts": time.time(), "device": self.device,
+                 "state": self.device_state()}
+        inner["sig"] = self.ident.sign(canonical(inner))
+        return inner
+
+    def _merge_device_state(self, state: dict, device) -> None:
+        groups = self.groups.merge_device_state(state.get("groups") or {})
+        people = self.trust.merge_device_state(state.get("trust") or {})
+        if groups or people:
+            names = ", ".join("#" + self.groups.get(g).name for g in groups if self.groups.get(g))
+            self.log(f"synced from your device {device}: {len(groups)} group(s){' (' + names + ')' if names else ''}, "
+                     f"{people} contact setting(s)")
+            self._emit("devices_synced", groups=groups, people=people)
+
+    async def sync_devices(self) -> int:
+        """Swap state with our other devices through each of our hubs. Returns how many answered."""
+        sealed = seal(self.enc.pub, canonical(self._signed_state()))
+        msg = {"type": "device_sync", "to": self.ident.pubkey, "sealed": sealed}
+        requests = [request(a[len(RELAY_PREFIX):], {"type": "forward", "to": self.ident.pubkey, "msg": msg,
+                                                     "except_device": self.device})
+                    for a in self.addrs if a.startswith(RELAY_PREFIX) and a[len(RELAY_PREFIX):] != self.addr]
+        requests += [request(a, msg) for a in self.device_addrs if not a.startswith(RELAY_PREFIX) and a != self.addr]
+        answered = 0
+        for reply in await asyncio.gather(*requests):
+            plain = open_sealed(self.enc, reply.get("sealed") or {}) if reply and reply.get("ok") else None
+            if not plain:
+                continue
+            inner = json.loads(plain)
+            body = {k: v for k, v in inner.items() if k != "sig"}
+            if inner.get("from") == self.ident.pubkey and verify(self.ident.pubkey, canonical(body), inner.get("sig", "")):
+                self._merge_device_state(inner.get("state") or {}, inner.get("device"))
+                answered += 1
+        return answered
+
+    def _state_changed(self) -> None:
+        """Something worth telling our other devices changed: sync shortly (batched)."""
+        if self._devsync_pending or not self.relays:
+            return
+        self._devsync_pending = True
+
+        async def later():
+            await asyncio.sleep(1.0)
+            self._devsync_pending = False
+            await self.sync_devices()
+
+        try:
+            self._spawn(later())
+        except RuntimeError:  # no event loop yet (changes made before start)
+            self._devsync_pending = False
+
     def _adopt_device_addrs(self, rec: Record) -> None:
         """Another device of ours published our record: keep its addresses in ours too, so people can
         reach whichever device is up. Re-announce only if that added something (no ping-pong)."""
@@ -633,6 +697,7 @@ class Node:
         if extra or missing:
             self._refresh_record()
             self._spawn(self.announce())
+        self._spawn(self.sync_devices())  # another device of ours is around: compare notes
 
     async def _peer_online(self, pubkey: str) -> None:
         """They're reachable again: deliver what we owe them and fill gaps in our chat."""
@@ -950,9 +1015,17 @@ class Node:
                 return {"ok": False, "error": "bad forward"}
             if to == self.ident.pubkey:
                 return await self.handle(_clean(inner))
-            sender, item = msg.get("from"), msg.get("item")
+            sender, item, skip = msg.get("from"), msg.get("item"), msg.get("except_device")
             return await self.hub.forward(to, _clean(inner), str(sender) if sender else None,
-                                          str(item) if item else None)
+                                          str(item) if item else None, str(skip) if skip else None)
+
+        if kind == "device_sync":
+            inner = self._open_sealed(msg)
+            if not inner or inner["from"] != self.ident.pubkey or inner.get("device") == self.device:
+                return {"ok": False, "error": "not allowed"}
+            self._merge_device_state(inner.get("state") or {}, inner.get("device"))
+            mine = self._signed_state()
+            return {"ok": True, "sealed": seal(self.enc.pub, canonical(mine))}
 
         if kind == "nudge":
             peer = str(msg.get("peer"))

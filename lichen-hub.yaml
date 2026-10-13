@@ -1,0 +1,34 @@
+# Lichen config. Run with:  lichen  (or python -m lichen)   (or --config this-file.yaml)
+# Anything here can also be given as a command-line flag, which wins over the file.
+
+name: HUB-ACM
+
+# --- Joining someone else's hub (most people) -----------------------------------------------
+# The hub's address: HOST:PORT for a hub with an open port, or wss://... for one behind
+# Cloudflare Tunnel / an HTTPS proxy. For redundancy, list several hubs:
+#   relay:
+#     - wss://chat.example.com
+#     - other-hub.example.org:9000
+#   relay: wss://chat.afrikamcclintock.com
+
+# --- Running a hub (uncomment) ---------------------------------------------------------------
+# A hub needs to be reachable. Either open/forward a port (TCP + UDP) and set host:
+#   port: 9000
+#   host: 203.0.113.7        # your public IP or a (dynamic) DNS name
+#   bind: 0.0.0.0
+# ...or keep it on localhost behind Cloudflare Tunnel (cloudflared -> http://localhost:9000):
+port: 9000
+url: wss://chat.afrikamcclintock.com
+# Link hubs together by bootstrapping from each other:
+#   bootstrap:
+#     - wss://other-hub.example.org
+
+# --- Advanced --------------------------------------------------------------------------------
+# stun:                      # where to learn your public UDP address for direct connections
+#   - stun.l.google.com:19302
+#   - stun.cloudflare.com:3478
+# data: data/yourname          # where your keys, phonebook and messages are stored
+# ui: auto                   # tui, cli, or auto (tui in a real terminal)
+# downloads: ~/Downloads/lichen   # where accepted files go
+# max_file_mb: 100           # refuse bigger offers
+# auto_download_mb: 0        # >0: auto-accept files up to this size from your contacts

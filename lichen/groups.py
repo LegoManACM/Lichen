@@ -128,9 +128,11 @@ class GroupStore:
         self.epochs: dict[str, dict[int, dict]] = {}  # owner only: group -> epoch -> {mode, start}
         # Your membership: "pending" (invited, not accepted yet), "accepted", "declined" or "left".
         self.status: dict[str, str] = {}
+        self.status_ts: dict[str, float] = {}  # when our status last changed (newest wins across devices)
         self.logs: dict[str, dict[str, dict]] = {}  # group -> msg id -> {"outer", "inner"}
+        self.on_change = None  # called when our membership status changes (device sync hooks in here)
         if path and path.exists():
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             if data.get("version") == FORMAT_VERSION:
                 for gid, g in data["groups"].items():
                     rec = GroupRecord.from_dict(g["record"])
@@ -140,6 +142,7 @@ class GroupStore:
                         self.epochs[gid] = {int(e): m for e, m in g.get("epochs", {}).items()}
                         self.logs[gid] = {m["outer"]["id"]: m for m in g["log"]}
                         self.status[gid] = g.get("status", "accepted")  # groups from before invites: joined
+                        self.status_ts[gid] = float(g.get("status_ts", 0))
 
     # --- records and keys ------------------------------------------------------------------------
 
@@ -148,9 +151,12 @@ class GroupStore:
         rec = self.groups.get(group_id)
         return bool(rec and self.ident.pubkey in rec.members and self.status.get(group_id) == "accepted")
 
-    def set_status(self, group_id: str, status: str) -> None:
+    def set_status(self, group_id: str, status: str, ts: float | None = None) -> None:
         self.status[group_id] = status
+        self.status_ts[group_id] = ts or time.time()
         self.save()
+        if self.on_change:
+            self.on_change()
 
     def merge(self, rec: GroupRecord | None) -> bool:
         """Store rec if valid and newer, and pick up any keys it carries for us."""
@@ -174,8 +180,7 @@ class GroupStore:
         self.logs[group_id] = {}
         self.keys[group_id] = {}
         self.epochs[group_id] = {}
-        self.status[group_id] = status
-        self.save()
+        self.set_status(group_id, status)
 
     def build_record(self, name: str, members: list[str], enc_keys: dict[str, str],
                      prev: GroupRecord | None, settings: dict, transfer: dict | None = None) -> GroupRecord:
@@ -285,7 +290,57 @@ class GroupStore:
                         "keys": {e: b64(k) for e, k in self.keys.get(gid, {}).items()},
                         "epochs": self.epochs.get(gid, {}),
                         "log": list(self.logs.get(gid, {}).values()),
-                        "status": self.status.get(gid, "pending")}
+                        "status": self.status.get(gid, "pending"), "status_ts": self.status_ts.get(gid, 0)}
                   for gid, rec in self.groups.items()}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"version": FORMAT_VERSION, "groups": groups}, indent=1))
+        self.path.write_text(json.dumps({"version": FORMAT_VERSION, "groups": groups}, indent=1), encoding="utf-8")
+
+    # --- syncing between your own devices -----------------------------------------------------------
+
+    def device_state(self, recent: int = 200) -> dict:
+        """Everything another device of ours needs: records, keys, epoch history (if we host), our
+        status with its timestamp, and recent messages (solo groups have nobody else to sync from)."""
+        return {gid: {"record": rec.to_dict(),
+                      "keys": {str(e): b64(k) for e, k in self.keys.get(gid, {}).items()},
+                      "epochs": {str(e): m for e, m in self.epochs.get(gid, {}).items()},
+                      "status": self.status.get(gid, "pending"), "status_ts": self.status_ts.get(gid, 0),
+                      "log": [m["outer"] for m in sorted(self.logs.get(gid, {}).values(),
+                                                         key=lambda m: m["inner"]["ts"])][-recent:]}
+                for gid, rec in self.groups.items()}
+
+    def merge_device_state(self, state: dict) -> list[str]:
+        """Merge another device's device_state(). Returns the ids of groups that changed for us."""
+        changed = []
+        for gid, g in (state or {}).items():
+            try:
+                rec = GroupRecord.from_dict(g["record"])
+                if not rec or rec.group_id != gid:
+                    continue
+                before = (self.groups.get(gid).seq if gid in self.groups else None, self.status.get(gid),
+                          len(self.logs.get(gid, {})))
+                self.merge(rec)
+                keys = self.keys.setdefault(gid, {})
+                for e, k in g.get("keys", {}).items():
+                    keys.setdefault(int(e), unb64(k))
+                epochs = self.epochs.setdefault(gid, {})
+                for e, m in g.get("epochs", {}).items():
+                    epochs.setdefault(int(e), {"mode": m["mode"], "start": float(m["start"])})
+                self.logs.setdefault(gid, {})
+                ts = float(g.get("status_ts", 0))
+                if ts > self.status_ts.get(gid, 0) and g.get("status") in ("pending", "accepted", "declined",
+                                                                             "left", "removed", "deleted"):
+                    self.status[gid], self.status_ts[gid] = g["status"], ts
+                    if g["status"] == "deleted":
+                        self.logs[gid], self.keys[gid], self.epochs[gid] = {}, {}, {}
+                for outer in g.get("log", []):
+                    if isinstance(outer, dict):
+                        self.add_message(outer)
+                after = (self.groups[gid].seq if gid in self.groups else None, self.status.get(gid),
+                         len(self.logs.get(gid, {})))
+                if after != before:
+                    changed.append(gid)
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+        if changed:
+            self.save()
+        return changed

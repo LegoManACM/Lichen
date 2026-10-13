@@ -11,7 +11,7 @@ class Phonebook:
         self.path = path
         self.records: dict[str, Record] = {}
         if path and path.exists():
-            for d in json.loads(path.read_text()):
+            for d in json.loads(path.read_text(encoding="utf-8")):
                 rec = Record.from_dict(d)
                 if rec:
                     self.records[rec.pubkey] = rec
@@ -40,4 +40,4 @@ class Phonebook:
     def save(self) -> None:
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps([r.to_dict() for r in self.records.values()], indent=1))
+            self.path.write_text(json.dumps([r.to_dict() for r in self.records.values()], indent=1), encoding="utf-8")

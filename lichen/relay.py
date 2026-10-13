@@ -116,8 +116,10 @@ class RelayHub:
         for task in list(self._tasks):
             task.cancel()
 
-    async def forward(self, to: str, msg: dict, sender: str | None = None, item: str | None = None) -> dict:
-        devices = list(self.attached.get(to, {}).values())
+    async def forward(self, to: str, msg: dict, sender: str | None = None, item: str | None = None,
+                      except_device: str | None = None) -> dict:
+        # except_device: a device syncing with its own other devices doesn't want its own request back.
+        devices = [a for d, a in self.attached.get(to, {}).items() if d != except_device]
         if devices:
             # Every device of theirs gets it; any one answering is enough.
             replies = [r for r in await asyncio.gather(*(self._push(a, msg) for a in devices)) if r is not None]

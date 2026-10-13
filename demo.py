@@ -572,6 +572,18 @@ async def main() -> None:
     assert await erin.sync_dm(dave.ident.pubkey) >= 1
     assert any(m["text"] == "sent from my laptop" for m in erin.dms.messages(dave.ident.pubkey))
     print("   what erin sent from her laptop shows up on her other device after a chat sync")
+
+    step("multiple devices: things only you are part of sync between your own devices")
+    notes = await laptop.create_group("notes", [])  # a solo group: nobody else to hear about it
+    await laptop.send_group(notes.group_id, "buy milk")
+    await laptop.leave_group(mixed.group_id)
+    laptop.trust.set_nickname(dave.ident.pubkey, "davey")
+    assert await wait_until(lambda: erin.groups.joined(notes.group_id), 5)
+    assert [m["text"] for m in erin.groups.messages(notes.group_id)] == ["buy milk"]
+    assert await wait_until(lambda: not erin.groups.joined(mixed.group_id), 5)
+    assert await wait_until(lambda: erin.trust.nickname(dave.ident.pubkey) == "davey", 5)
+    print("   erin's other device picked up the solo group #notes (with its message), leaving #mixed, "
+          "and the nickname 'davey'")
     await laptop.stop()
 
     step("mallory forges a record claiming alice lives at mallory's address")

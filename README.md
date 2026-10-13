@@ -311,8 +311,13 @@ After that both devices are you, at once:
   filled in by chat and group sync from the people you talk to, including messages you sent from
   the other device. A new device also syncs with all your contacts on first start.
 
-Not synced between your own devices (yet): trust changes, nicknames and accepted invites made after
-the export, and files you've downloaded.
+- Your devices also **sync with each other** (sealed to your own key, through your hubs): groups
+  (including solo groups, joins, leaves and deletes, with recent messages), contacts, blocks, nicknames
+  and verifications. Whichever device changed something last wins. This happens at startup, when one
+  device sees another come online, a moment after you change something, and every minute; a device
+  that was off catches up the next time both are on.
+
+Not synced between devices: files you've downloaded (each device downloads its own copy).
 
 ## Trust, requests and invites
 
