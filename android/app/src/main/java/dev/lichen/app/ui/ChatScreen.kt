@@ -152,7 +152,7 @@ private fun withDays(items: List<TimelineItem>): List<ChatRow> {
     return out
 }
 
-private fun dayLabel(ts: Double): String {
+internal fun dayLabel(ts: Double): String {
     val cal = Calendar.getInstance().apply { timeInMillis = (ts * 1000).toLong() }
     val today = Calendar.getInstance()
     fun same(a: Calendar, b: Calendar) = a.get(Calendar.YEAR) == b.get(Calendar.YEAR) && a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR)
@@ -165,7 +165,7 @@ private fun dayLabel(ts: Double): String {
 }
 
 @Composable
-private fun DayChip(label: String) {
+internal fun DayChip(label: String) {
     val p = Slab.colors
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Text(
@@ -176,7 +176,7 @@ private fun DayChip(label: String) {
 }
 
 @Composable
-private fun Banner(text: String, primary: String, secondary: String?, onPrimary: () -> Unit, onSecondary: (() -> Unit)?) {
+internal fun Banner(text: String, primary: String, secondary: String?, onPrimary: () -> Unit, onSecondary: (() -> Unit)?) {
     val p = Slab.colors
     Column(Modifier.fillMaxWidth().background(p.alertGround)) {
         Row(
@@ -192,24 +192,34 @@ private fun Banner(text: String, primary: String, secondary: String?, onPrimary:
 }
 
 @Composable
-private fun Bubble(m: ChatMessage) {
+private fun Bubble(m: ChatMessage) = SlabBubble(m.text, m.ts, m.outgoing, m.status)
+
+/**
+ * A message: mine filled accent with a hard shadow on the right, theirs card-filled with an edge border on
+ * the left, the time (and for mine, [status]) in muted mono underneath. [header] goes above the bubble
+ * (the sender in a group).
+ */
+@Composable
+internal fun SlabBubble(
+    text: String, ts: Double, out: Boolean, status: MessageStatus? = null, header: (@Composable () -> Unit)? = null,
+) {
     val p = Slab.colors
-    val out = m.outgoing
     Column(
         Modifier.fillMaxWidth(), horizontalAlignment = if (out) Alignment.End else Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        header?.invoke()
         val bubble = Modifier.widthIn(max = 300.dp).let {
             if (out) it.hardShadow(p.shadow).background(p.accent).padding(horizontal = 13.dp, vertical = 10.dp)
             else it.background(p.card).slabBorder(p.edge).padding(horizontal = 12.dp, vertical = 9.dp)
         }
         Text(
-            m.text, bubble, fontSize = 15.sp, lineHeight = 21.sp,
+            text, bubble, fontSize = 15.sp, lineHeight = 21.sp,
             fontWeight = if (out) FontWeight.Medium else FontWeight.Normal, color = if (out) p.onAccent else p.text,
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(clockTime(m.ts), fontFamily = Slab.mono, fontSize = 10.sp, color = p.muted)
-            if (out) StatusMark(m.status)
+            Text(clockTime(ts), fontFamily = Slab.mono, fontSize = 10.sp, color = p.muted)
+            if (out) StatusMark(status)
         }
     }
 }

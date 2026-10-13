@@ -8,90 +8,188 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.currentStateAsState
 import dev.lichen.app.Backend
 import dev.lichen.app.OpenChat
+import dev.lichen.app.ui.theme.*
 import dev.lichen.core.api.*
 import kotlinx.coroutines.launch
 
-// Group chats, minimal: rows for the contacts screen, the chat, "new group" and the group info screen.
-// A designer will redo the visuals; this is just enough to use the feature.
+// Group chats: rows for the contacts screen, the chat, "new group" and the group info screen.
 
 /** The id a group goes by in navigation stacks, notifications and [Backend.currentChat]. */
 fun groupKey(groupId: String) = "group:$groupId"
 
-@Composable
-private fun GroupAvatar(name: String, id: String) {
-    val hue = (id.hashCode().toUInt() % 360u).toFloat()
-    Box(Modifier.size(48.dp).clip(CircleShape).background(Color.hsv(hue, 0.35f, 0.6f)), contentAlignment = Alignment.Center) {
-        Text(name.trim().take(1).uppercase().ifEmpty { "#" }, color = Color.White, fontWeight = FontWeight.SemiBold)
-    }
+internal sealed interface CollageTile {
+    data class Person(val pubkey: String, val name: String) : CollageTile
+    data class More(val count: Int) : CollageTile
 }
 
-/** Invites (with Accept / Decline) and groups, for the top of the chat list. */
-fun LazyListScope.groupRows(
-    groups: List<GroupInfo>, onOpen: (String) -> Unit, onAccept: (String) -> Unit, onDecline: (String) -> Unit,
-) {
-    items(groups, key = { "group-row:${it.id}" }) { g ->
-        Row(
-            Modifier.fillMaxWidth().clickable(enabled = !g.pending) { onOpen(g.id) }.padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            GroupAvatar(g.name, g.id)
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "# ${g.name}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium,
-                    fontWeight = if (g.unread > 0) FontWeight.Bold else FontWeight.Medium,
-                )
-                if (g.pending) {
-                    Text("Invited by ${g.ownerName}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row {
-                        TextButton(onClick = { onAccept(g.id) }) { Text("Accept") }
-                        TextButton(onClick = { onDecline(g.id) }) { Text("Decline") }
-                    }
-                } else {
-                    Text(
-                        g.lastMessage?.let { (if (it.outgoing) "You" else it.authorName) + ": " + it.text } ?: "${g.members.size} members",
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+/**
+ * Who a group's icon shows: the other members, or just you when there is no one else.
+ * Up to four tiles; past four, the fourth is "+N" for everyone not shown.
+ */
+internal fun collageTiles(members: List<GroupMember>): List<CollageTile> {
+    val shown = members.filter { !it.isYou }.ifEmpty { members }
+    if (shown.size <= 4) return shown.map { CollageTile.Person(it.pubkey, it.name) }
+    return shown.take(3).map { CollageTile.Person(it.pubkey, it.name) } + CollageTile.More(shown.size - 3)
+}
+
+/**
+ * A group's icon: its members' avatars (the same tint and initial as [Avatar]) in a square, split by 2dp
+ * edge-colored lines and framed in the same 2dp edge. One member fills it; two sit side by side; three are one
+ * tall tile and two small ones; four or more make a 2x2 grid, the last tile "+N" when there are more than four.
+ */
+@Composable
+fun GroupAvatar(members: List<GroupMember>, size: Dp = 46.dp, modifier: Modifier = Modifier) {
+    val p = Slab.colors
+    val tiles = collageTiles(members)
+    val gap = 2.dp
+    val col = Modifier.fillMaxHeight()
+    Box(modifier.size(size).background(p.edge).padding(gap)) {
+        when (tiles.size) {
+            0 -> Box(Modifier.fillMaxSize().background(p.card), contentAlignment = Alignment.Center) {
+                Text("#", color = p.muted, fontFamily = Slab.mono, fontWeight = FontWeight.SemiBold, fontSize = (size.value * 0.39f).sp)
+            }
+            1 -> CollageCell(tiles[0], Modifier.fillMaxSize())
+            2 -> Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                CollageCell(tiles[0], col.weight(1f)); CollageCell(tiles[1], col.weight(1f))
+            }
+            3 -> Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                CollageCell(tiles[0], col.weight(1f))
+                Column(col.weight(1f), verticalArrangement = Arrangement.spacedBy(gap)) {
+                    CollageCell(tiles[1], Modifier.fillMaxWidth().weight(1f)); CollageCell(tiles[2], Modifier.fillMaxWidth().weight(1f))
                 }
             }
-            if (!g.pending) {
-                Column(horizontalAlignment = Alignment.End) {
-                    g.lastMessage?.let { Text(relativeTime(it.ts), style = MaterialTheme.typography.labelSmall) }
-                    if (g.unread > 0) { Spacer(Modifier.height(4.dp)); Badge { Text(g.unread.toString()) } }
+            else -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(gap)) {
+                for (r in 0..1) Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                    CollageCell(tiles[r * 2], col.weight(1f)); CollageCell(tiles[r * 2 + 1], col.weight(1f))
                 }
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** One collage tile: a person's avatar tint and mono initial, or "+N" on the bar color. */
+@Composable
+private fun CollageCell(t: CollageTile, modifier: Modifier) {
+    val p = Slab.colors
+    BoxWithConstraints(
+        modifier.background(if (t is CollageTile.Person) avatarTint(t.pubkey) else p.bar), contentAlignment = Alignment.Center,
+    ) {
+        val fontSize = (minOf(maxWidth, maxHeight).value * 0.5f).coerceIn(8f, 28f)
+        when (t) {
+            is CollageTile.Person -> Text(
+                initialOf(t.name), color = Color(0xFF0B0D0A), fontFamily = Slab.mono, fontWeight = FontWeight.SemiBold,
+                fontSize = fontSize.sp, maxLines = 1,
+            )
+            is CollageTile.More -> Text(
+                "+${t.count}", color = p.text, fontFamily = Slab.mono, fontWeight = FontWeight.SemiBold,
+                fontSize = (fontSize * 0.8f).sp, letterSpacing = (-0.04).em, maxLines = 1,
+            )
+        }
+    }
+}
+
+/** Invites (with Accept / Decline) and groups, for the top of the chat list. Laid out like a contact's row. */
+fun LazyListScope.groupRows(
+    groups: List<GroupInfo>, onOpen: (String) -> Unit, onAccept: (String) -> Unit, onDecline: (String) -> Unit,
+) {
+    items(groups, key = { "group-row:${it.id}" }) { g ->
+        val p = Slab.colors
+        Column(Modifier.fillMaxWidth().clickable(enabled = !g.pending) { onOpen(g.id) }) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                GroupAvatar(g.members)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                g.name, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.Bold, fontSize = 16.sp, color = p.text,
+                            )
+                            Text(
+                                if (g.pending) "INVITE" else "GROUP · ${g.members.size}", fontFamily = Slab.mono, fontSize = 10.sp,
+                                letterSpacing = 0.08.em, color = if (g.pending) p.alert else p.muted, maxLines = 1,
+                            )
+                        }
+                        if (!g.pending) g.lastMessage?.let {
+                            Text(
+                                relativeTime(it.ts), fontFamily = Slab.mono, fontSize = 11.sp,
+                                color = if (g.unread > 0) p.accent else p.muted,
+                            )
+                        }
+                    }
+                    if (g.pending) {
+                        Text("Invited by ${g.ownerName}", fontSize = 14.sp, color = p.subtle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SlabButton("Accept", { onAccept(g.id) }, height = 36.dp)
+                            SlabButton("Decline", { onDecline(g.id) }, style = SlabButtonStyle.Secondary, height = 36.dp)
+                        }
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                g.lastMessage?.let { (if (it.outgoing) "You" else it.authorName) + ": " + it.text } ?: "No messages yet",
+                                Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = p.subtle,
+                            )
+                            if (g.unread > 0) MonoTag(g.unread.toString(), p.accent, p.onAccent, shadow = p.shadow)
+                        }
+                    }
+                }
+            }
+            Box(Modifier.fillMaxWidth().height(2.dp).background(p.card))
+        }
+    }
+}
+
+/** A group chat's list: messages with a day chip wherever the day changes. */
+private sealed interface GroupRow {
+    val key: String
+    data class Day(val label: String, override val key: String) : GroupRow
+    /** [first]: the first of a run from one author, which gets their avatar and name above it. */
+    data class Msg(val m: GroupMessage, val first: Boolean) : GroupRow { override val key: String get() = m.id }
+}
+
+private fun groupRowsOf(messages: List<GroupMessage>): List<GroupRow> {
+    val out = ArrayList<GroupRow>(messages.size + 4)
+    var lastDay: String? = null
+    var lastFrom: String? = null
+    for (m in messages) {
+        val day = dayLabel(m.ts)
+        if (day != lastDay) { out += GroupRow.Day(day, "day:$day:${m.id}"); lastDay = day; lastFrom = null }
+        out += GroupRow.Msg(m, m.from != lastFrom)
+        lastFrom = m.from
+    }
+    return out
+}
+
 @Composable
 fun GroupChatScreen(client: ChatClient, profileId: String, groupId: String, onBack: () -> Unit, onInfo: () -> Unit) {
     val groups by client.groups.groups.collectAsState()
     val group = groups.firstOrNull { it.id == groupId }
     val messages by client.groups.messages(groupId).collectAsState()
+    val rows = remember(messages) { groupRowsOf(messages) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val snackbar = remember { SnackbarHostState() }
@@ -103,21 +201,33 @@ fun GroupChatScreen(client: ChatClient, profileId: String, groupId: String, onBa
         if (resumed) Backend.currentChat.value = me
         onDispose { if (Backend.currentChat.value == me) Backend.currentChat.value = null }
     }
-    LaunchedEffect(messages.size) { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1) }
+    LaunchedEffect(rows.size) { if (rows.isNotEmpty()) listState.animateScrollToItem(rows.size - 1) }
 
+    val p = Slab.colors
     Scaffold(
         modifier = Modifier.imePadding(),
+        containerColor = p.ground,
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
-            TopAppBar(
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                title = {
-                    Column(Modifier.clickable(enabled = group != null, onClick = onInfo)) {
-                        Text(group?.let { "# ${it.name}" } ?: "Group", style = MaterialTheme.typography.titleMedium)
-                        if (group != null) Text("${group.members.size} members", style = MaterialTheme.typography.labelSmall)
+            SlabTopBar(onBack = onBack, content = {
+                Row(
+                    Modifier.weight(1f).clickable(enabled = group != null, onClick = onInfo),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    group?.let { GroupAvatar(it.members, 40.dp) }
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            group?.name ?: "Group", fontWeight = FontWeight.Bold, fontSize = 17.sp,
+                            letterSpacing = (-0.01).em, color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                        if (group != null) Text(
+                            "■ ${group.members.size} PEOPLE · ENCRYPTED", fontFamily = Slab.mono, fontSize = 10.sp,
+                            letterSpacing = 0.1.em, color = p.muted, maxLines = 1,
+                        )
                     }
-                },
-            )
+                }
+                if (group != null) SlabIconButton(Icons.Outlined.Info, "Group info", onInfo)
+            })
         },
         bottomBar = {
             if (group != null && !group.pending) Composer { text ->
@@ -130,44 +240,51 @@ fun GroupChatScreen(client: ChatClient, profileId: String, groupId: String, onBa
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             if (group == null) {
-                Text("This group isn't available (any more).", Modifier.padding(24.dp))
+                Text("This group isn't available (any more).", Modifier.padding(24.dp), color = p.subtle, fontSize = 15.sp)
                 return@Column
             }
             if (group.pending) {
-                Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
-                    Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Invited by ${group.ownerName}", Modifier.weight(1f))
-                        TextButton(onClick = { scope.launch { client.groups.decline(groupId); onBack() } }) { Text("Decline") }
-                        TextButton(onClick = { scope.launch { client.groups.accept(groupId) } }) { Text("Accept") }
-                    }
-                }
+                Banner(
+                    "Invited by ${group.ownerName}", "Accept", "Decline",
+                    { scope.launch { client.groups.accept(groupId) } },
+                    { scope.launch { client.groups.decline(groupId); onBack() } },
+                )
             }
             LazyColumn(
                 Modifier.weight(1f).fillMaxWidth(), state = listState,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
+                contentPadding = PaddingValues(start = 14.dp, end = 18.dp, top = 16.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(messages, key = { it.id }) { GroupBubble(it) }
+                items(rows, key = { it.key }) { r ->
+                    when (r) {
+                        is GroupRow.Day -> DayChip(r.label)
+                        is GroupRow.Msg -> GroupBubble(r.m, r.first)
+                    }
+                }
             }
         }
     }
 }
 
+/** The DM bubble, with the sender's avatar and name above the first of a run of someone else's messages. */
 @Composable
-private fun GroupBubble(m: GroupMessage) {
-    val out = m.outgoing
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (out) Arrangement.End else Arrangement.Start) {
-        Surface(
-            color = if (out) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = RoundedCornerShape(18.dp, 18.dp, if (out) 4.dp else 18.dp, if (out) 18.dp else 4.dp),
-            modifier = Modifier.widthIn(max = 300.dp),
-        ) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                if (!out) Text(m.authorName, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                Text(m.text, style = MaterialTheme.typography.bodyLarge)
-                Text(clockTime(m.ts), Modifier.align(Alignment.End), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun GroupBubble(m: GroupMessage, first: Boolean) {
+    val p = Slab.colors
+    val header: (@Composable () -> Unit)? = if (m.outgoing || !first) null else {
+        {
+            Row(
+                Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SquareAvatar(initialOf(m.authorName), avatarTint(m.from), 20.dp)
+                Text(
+                    m.authorName.uppercase(), fontFamily = Slab.mono, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+                    letterSpacing = 0.08.em, color = p.subtle, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
+    SlabBubble(m.text, m.ts, m.outgoing, header = header)
 }
 
 // --- new group ---------------------------------------------------------------------------------------
@@ -276,7 +393,10 @@ fun GroupInfoScreen(client: ChatClient, groupId: String, onBack: () -> Unit, onG
             return@Scaffold
         }
         Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("# ${g.name}", style = MaterialTheme.typography.headlineSmall)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                GroupAvatar(g.members, 64.dp)
+                Text(g.name, style = MaterialTheme.typography.headlineSmall)
+            }
             Text(
                 "Owner: ${g.ownerName}" + if (g.youOwn) " (you)" else "",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
