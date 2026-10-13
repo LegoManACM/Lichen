@@ -120,7 +120,7 @@ fun GroupChatScreen(client: ChatClient, profileId: String, groupId: String, onBa
             )
         },
         bottomBar = {
-            if (group != null && !group.pending) Composer(onAttach = {}) { text ->
+            if (group != null && !group.pending) Composer { text ->
                 scope.launch {
                     val r = client.groups.send(groupId, text)
                     if (r is GroupResult.Failed) snackbar.showSnackbar(r.reason)

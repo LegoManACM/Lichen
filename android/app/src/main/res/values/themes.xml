@@ -3,5 +3,7 @@
     <style name="Theme.Lichen" parent="android:Theme.DeviceDefault.DayNight">
         <item name="android:windowActionBar">false</item>
         <item name="android:windowNoTitle">true</item>
+        <!-- Moss ground, so the window behind the first frame matches the default palette. -->
+        <item name="android:windowBackground">@color/slab_ground</item>
     </style>
 </resources>
