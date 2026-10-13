@@ -2,10 +2,12 @@ package dev.lichen.app
 
 import android.content.Context
 import dev.lichen.core.FileSetup
-import dev.lichen.core.api.ChatClient
 import dev.lichen.core.api.LichenSetup
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
+
+/** A chat on screen, or one a notification wants opened. */
+data class OpenChat(val profileId: String, val pubkey: String)
 
 /**
  * The one place that decides which implementation the app runs on.
@@ -14,22 +16,16 @@ import java.io.File
 object Backend {
     val setup: LichenSetup = FileSetup()
 
-    fun dataDir(context: Context): File = File(context.applicationContext.filesDir, "lichen").also { it.mkdirs() }
+    private var profiles: Profiles? = null
 
-    private var current: ChatClient? = null
-
-    /** The app-wide client (opened, not necessarily started; LichenService starts and stops it). */
+    /** The app-wide profile manager (all profiles, one opened client each). */
     @Synchronized
-    fun client(context: Context): ChatClient =
-        current ?: setup.open(dataDir(context)).also { current = it }
+    fun profiles(context: Context): Profiles = profiles
+        ?: Profiles(File(context.applicationContext.filesDir, "lichen"), setup).also { profiles = it }
 
-    /** Forget the client, e.g. after the hubs changed and it has to be re-opened. */
-    @Synchronized
-    fun reset() { current = null }
+    /** The chat on screen right now (null when none, or the app isn't visible). */
+    val currentChat = MutableStateFlow<OpenChat?>(null)
 
-    /** Pubkey of the chat on screen right now (null when none, or the app isn't visible). */
-    val currentChat = MutableStateFlow<String?>(null)
-
-    /** A notification tap asks the UI to open this chat. */
-    val openChat = MutableStateFlow<String?>(null)
+    /** A notification tap asks the UI to switch to this profile and open this chat. */
+    val openChat = MutableStateFlow<OpenChat?>(null)
 }

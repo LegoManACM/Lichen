@@ -44,13 +44,16 @@ fun HubChip(hubs: List<HubStatus>) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ContactsScreen(client: ChatClient, onOpenChat: (String) -> Unit, onNewChat: () -> Unit, onProfile: () -> Unit) {
+fun ContactsScreen(
+    client: ChatClient, profileName: String, profileId: String, onSwitcher: () -> Unit,
+    onOpenChat: (String) -> Unit, onNewChat: () -> Unit, onProfile: () -> Unit,
+) {
     val contacts by client.contacts.collectAsState()
     val hubs by client.hubs.collectAsState()
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Lichen") },
+                title = { ProfileTitle(profileName, profileId, onSwitcher) },
                 actions = {
                     HubChip(hubs)
                     IconButton(onClick = onProfile) { Icon(Icons.Default.Settings, "Profile and settings") }
