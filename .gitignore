@@ -7,6 +7,7 @@ lichen.yaml
 lichen.yml
 lichen.json
 me.lichen
+lichen.me
 build/
 dist/
 *.egg-info/
