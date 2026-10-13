@@ -16,6 +16,18 @@ Commands (one JSON object per line):
                                                       (as if it had been sent but never arrived: chat sync must find it)
   {"cmd": "forget", "who": "user"|"hub", "peer": PK}  drop that node's history with peer (in memory only)
   {"cmd": "sync", "who": "user"|"hub", "peer": PK}    run dm_sync with peer -> {"event": "synced", "n": gained}
+  --- phase 2 (signals, device sync) ---
+  {"cmd": "signal", "who": W, "peer": PK, "kind": "typing"|"read"|"here"}  send a presence signal -> {"event": "ok", "result": bool|null}
+  {"cmd": "status", "who": W, "peer": PK}             -> {"event": "status", "online": bool, "typing": bool}
+  {"cmd": "receipt", "who": W, "peer": PK, "id": ID}  -> {"event": "receipt", "status": "waiting"|"delivered"|"read"|null}
+  {"cmd": "start_sibling", "keydir": DIR, "name": N}  start a relay-only Python device with the SAME identity as the
+                                                      key/enckey files in DIR (a Kotlin phone's folder), as who = "sibling"
+  {"cmd": "stop_sibling"}                             (stopping leaves a final vault snapshot, like a real device)
+  {"cmd": "sync_devices", "who": W} / {"cmd": "sync_vault", "who": W}   -> {"event": "synced", "n": ...}
+  {"cmd": "digest", "who": W}                         -> {"event": "digest", "digest": hex}
+  {"cmd": "vault"}                                    -> {"event": "vault", "snaps": {pubkey: {device: rev}}} (what the hub holds)
+  {"cmd": "trust_of", "who": W, "pk": PK}             -> {"event": "trust_of", "level": ..., "nickname": ..., "verified": ...}
+  {"cmd": "nickname", "who": W, "pk": PK, "nickname": N}
   {"cmd": "quit"}
 Events: {"event": "ready", ...whoami}, {"event": "message", "node": "user"|"hub", "from": PK, "text": ..., "id": ...}
 """
@@ -52,6 +64,7 @@ class Peer:
         self.hub_addr = f"127.0.0.1:{args.port}"
         self.hub: Node | None = None
         self.user: Node | None = None
+        self.sibling: Node | None = None
 
     def _on_message(self, who: str):
         def cb(rec, text, env):
@@ -71,6 +84,24 @@ class Peer:
                                   log=lambda s: log("[user] " + s))
         await self.user.start()
 
+    async def start_sibling(self, keydir: Path, name: str) -> None:
+        """A second relay-only device with the same identity as the key files in keydir."""
+        import shutil
+        from lichen.devices import mark_linked
+        d = self.dir / "sibling"
+        d.mkdir(parents=True, exist_ok=True)
+        for f in ("key", "enckey"):
+            shutil.copyfile(keydir / f, d / f)
+        mark_linked(d)
+        self.sibling = Node.from_dir(d, name, relay=self.hub_addr, bootstrap=[self.hub_addr], direct=False, stun=[],
+                                     on_message=self._on_message("sibling"), log=lambda s: log("[sibling] " + s))
+        await self.sibling.start()
+
+    async def stop_sibling(self) -> None:
+        if self.sibling:
+            await self.sibling.stop()
+            self.sibling = None
+
     async def stop_user(self) -> None:
         if self.user:
             await self.user.stop()
@@ -87,7 +118,7 @@ class Peer:
         return Identity.load_or_create(key).pubkey if key.exists() else None
 
     def _node(self, who: str) -> Node | None:
-        return self.hub if who == "hub" else self.user
+        return self.hub if who == "hub" else self.sibling if who == "sibling" else self.user
 
     async def command(self, cmd: dict) -> bool:
         kind = cmd.get("cmd")
@@ -131,6 +162,45 @@ class Peer:
             emit(event="ok", cmd=kind)
         elif kind == "sync":
             emit(event="synced", n=await self._node(cmd.get("who", "user")).sync_dm(cmd["peer"]))
+        elif kind == "signal":
+            node, peer, what = self._node(cmd.get("who", "user")), cmd["peer"], cmd["kind"]
+            result = None
+            if what == "typing":
+                node._typing_sent.pop(peer, None)
+                node.send_typing(peer)
+            elif what == "read":
+                node.send_read(peer)
+            elif what == "here":
+                result = await node._signal(peer, {"signal": "here"})
+            await asyncio.sleep(0.2)  # let a spawned signal go out
+            emit(event="ok", cmd=kind, result=result)
+        elif kind == "status":
+            node, peer = self._node(cmd.get("who", "user")), cmd["peer"]
+            emit(event="status", online=node.online(peer), typing=node.typing.get(peer, 0) > time.time())
+        elif kind == "receipt":
+            node, peer = self._node(cmd.get("who", "user")), cmd["peer"]
+            msg = next((m for m in node.dms.messages(peer) if m.get("id") == cmd["id"]), None)
+            emit(event="receipt", status=node.message_status(peer, msg) if msg else None)
+        elif kind == "start_sibling":
+            await self.start_sibling(Path(cmd["keydir"]), cmd.get("name", "kate"))
+            emit(event="ok", cmd=kind, device=self.sibling.device)
+        elif kind == "stop_sibling":
+            await self.stop_sibling()
+            emit(event="ok", cmd=kind)
+        elif kind == "sync_devices":
+            emit(event="synced", n=await self._node(cmd.get("who", "sibling")).sync_devices())
+        elif kind == "sync_vault":
+            emit(event="synced", n=await self._node(cmd.get("who", "sibling")).sync_vault())
+        elif kind == "digest":
+            emit(event="digest", digest=self._node(cmd.get("who", "sibling"))._pack().digest)
+        elif kind == "vault":
+            emit(event="vault", snaps={pk: {d: s["rev"] for d, s in devs.items()} for pk, devs in self.hub.vault.snaps.items()})
+        elif kind == "trust_of":
+            t = self._node(cmd.get("who", "sibling")).trust
+            emit(event="trust_of", level=t.get(cmd["pk"]), nickname=t.nicknames.get(cmd["pk"]), verified=t.verified.get(cmd["pk"]))
+        elif kind == "nickname":
+            self._node(cmd.get("who", "sibling")).trust.set_nickname(cmd["pk"], cmd["nickname"])
+            emit(event="ok", cmd=kind)
         elif kind == "quit":
             return False
         else:
@@ -152,6 +222,7 @@ class Peer:
                     break
             except Exception as e:  # keep serving; the test sees the error event
                 emit(event="error", error=f"{type(e).__name__}: {e}")
+        await self.stop_sibling()
         await self.stop_user()
         await self.hub.stop()
 

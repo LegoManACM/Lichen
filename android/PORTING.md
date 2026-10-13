@@ -92,6 +92,25 @@ Requests the phone must **make**: `hello` (join each hub at start), `announce` (
 
 Device id: own random id in `device` (never copied from an export). An imported identity is `linked`.
 
-## Phases 2 and 3 (later)
-2. Requests screen, read/delivered receipts, typing, presence, device sync (`device_sync`, vault).
-3. Groups, files, UDP hole punching.
+## Phase 2 (done): signals, device sync, requests
+
+- `node/Signals.kt`: presence `here` every 2 keepalive ticks (30 s) to trusted contacts, `sendTyping` (3 s throttle),
+  `sendRead`. Signals only go to trusted contacts and are sealed like messages (`_quick` = first two addrs, no outbox).
+- `node/DeviceSync.kt`: `_pack/_seal_snapshot/_open_snapshot`, live `device_sync` probe/full through the hubs
+  (`forward` + `except_device`/`fanout`/`only_device`), vault push/pull (client side only; the phone answers
+  `vault_put`/`vault_get` with an error), `devsync.json`, final push on stop (`Node.finalSync`, called by `NodeClient.stop`).
+  Timings as in Python: change -> live sync after 1 s, vault push after 5 s with at least 15 s between uploads per hub
+  (a change inside that gap waits for the next 60 s device round or the final push, same as Python).
+- The synced state is a map of named sections (`DeviceSync.register(name, StateSection(inDigest, export, merge))`).
+  Registered: `trust`, `dms`, `outbox`, `phonebook` (not in the digest, like Python). `groups` and `files` start as
+  the empty shapes Python produces with no groups/files (`{}` and `{"incoming": {}}`), so digests agree with a Python
+  device that has none. **Until the groups/files code registers real sections, a device that has groups or file
+  offers will never agree on the digest with the phone** (it will keep trying a full swap; chats still merge) and
+  those sections are not carried through the phone. Stores' merge functions must not call their change hook.
+- `ChatClient`: `typing`, `typing(pk)`, `requests`, `safetyCode`, `setVerified`, `log`; `Contact.verified`.
+  `NodeClient(dataDir, logSink)` / `FileSetup(logSink)`: the app passes `Log.i("Lichen", ...)`.
+- Tests: `Phase2IntegrationTest` against `tools/py_peer.py` (which gained signal/status/receipt, `start_sibling`
+  (a second Python device with the same identity), vault/digest commands).
+
+## Phase 3 (later)
+Groups, files, UDP hole punching.

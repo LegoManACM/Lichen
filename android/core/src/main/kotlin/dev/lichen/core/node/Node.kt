@@ -40,6 +40,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.abs
@@ -50,8 +51,7 @@ import kotlin.math.abs
 //
 // Handled: hello, announce, lookup, msg, signal, owed, nudge, dm_sync. Made: hello, announce, lookup,
 // forward, msg (with IOU ids), dm_sync, outbox + flush.
-// TODO(phase 2): presence signals (_presence_round), sending typing/read signals, device_sync/vault_put/vault_get
-//   (sync_devices, sync_vault, _state_changed), the keepalive's device round.
+// Phase 2 (Signals.kt, DeviceSync.kt): presence/typing/read signals, device_sync, vault client, the device round.
 // TODO(phase 3): groups (group_msg/group_update/group_sync/group_leave), files (file_offer/file_get),
 //   UDP hole punching (punch, _try_direct, direct paths in _req), group_handoff.
 
@@ -86,6 +86,8 @@ class Node(
     var onMessage: ((Record?, String, JsonObject) -> Unit)? = null,
     /** (kind, pubkey, count): "presence", "receipt", "typing", "owed". */
     var onEvent: ((String, String?, Int) -> Unit)? = null,
+    /** Data folder for sync bookkeeping (`linked`, `devsync.json`); null = in memory only (tests). */
+    syncDir: File? = null,
 ) {
     val relays: List<String> = relays.toList()
     /** Hubs are bootstrap addresses too (cli.py): we say hello to them at start. */
@@ -105,6 +107,23 @@ class Node(
     private val owedSeen = ConcurrentHashMap<String, MutableSet<String>>()  // IOU item ids already reported, per sender
     private val lastSeen = ConcurrentHashMap<String, Double>()
     val typing = ConcurrentHashMap<String, Double>()  // pubkey -> show "typing…" until this time (epoch seconds)
+
+    val signals = Signals(this)
+    /** Syncing with our other devices (live and through the hubs' vault). Other code registers its state sections here. */
+    val deviceSync = DeviceSync(ident, enc, device, syncDir, log, scope,
+        hubs = { addrs.filter { it.startsWith(RELAY_PREFIX) }.map { it.substring(RELAY_PREFIX.length) } },
+        siblings = { addrs.filter { !it.startsWith(RELAY_PREFIX) } },
+        onMerged = { _, n -> onEvent?.invoke("devices_synced", null, n) })
+    private val hooked = ArrayList<Pair<((() -> Unit)?) -> Unit, (() -> Unit)?>>()  // (setter, previous hook) to undo on stop
+
+    init {
+        deviceSync.register("trust", StateSection(export = { trust.deviceState() }, merge = { trust.mergeDeviceState(it) }))
+        deviceSync.register("dms", StateSection(export = { dms.deviceState(it) }, merge = { dms.mergeDeviceState(it, ident.pubkey) }))
+        deviceSync.register("outbox", StateSection(export = { outbox.deviceState() }, merge = { outbox.mergeDeviceState(it) }))
+        deviceSync.register("phonebook", StateSection(inDigest = false,
+            export = { JsonArray(phonebook.all().filter { it.pubkey != ident.pubkey }.sortedBy { it.pubkey }.map { it.toJson() }) },
+            merge = { st -> phonebook.mergeAll((st as? JsonArray)?.mapNotNull { Record.fromJson(it) }?.filter { it.pubkey != ident.pubkey } ?: emptyList()) }))
+    }
 
     /** addrs: relay:<hub> for each hub, then adopted device addresses. */
     val addrs: List<String>
@@ -132,13 +151,22 @@ class Node(
                 }
             }.awaitAll()
         }
+        // Changes to our own state are news for our other devices.
+        fun chain(get: () -> (() -> Unit)?, set: ((() -> Unit)?) -> Unit) {
+            val prev = get()
+            hooked.add(set to prev)
+            set { prev?.invoke(); deviceSync.stateChanged() }
+        }
+        chain({ dms.onChange }, { dms.onChange = it }); chain({ outbox.onChange }, { outbox.onChange = it }); chain({ trust.onChange }, { trust.onChange = it })
         keepalive = scope.launch { keepaliveLoop() }
         catchUp = scope.launch {
             try {
                 for (addr in bootstrap) join(addr)
                 // Our address may differ from last run; tell everyone we already know about.
                 announce()
-                // TODO(phase 2): sync_devices(), sync_vault(); (phase 3): group sync.
+                // First with our own other devices (live, then what they left on our hubs); (phase 3): group sync.
+                deviceSync.syncDevices()
+                deviceSync.syncVault()
                 syncDms()
                 flushOutbox()
             } catch (e: CancellationException) {
@@ -149,7 +177,14 @@ class Node(
         }
     }
 
+    /** Leave a last snapshot on our hubs if something changed since the previous one (call before [stop]). */
+    suspend fun finalSync() {
+        try { withTimeoutOrNull(10_000) { deviceSync.finalPush() } } catch (e: CancellationException) { throw e } catch (e: Exception) { log("final sync failed: $e") }
+    }
+
     fun stop() {
+        for ((set, prev) in hooked) set(prev)
+        hooked.clear()
         keepalive?.cancel()
         for (c in relayClients) c.stop()
         relayClients.clear()
@@ -162,9 +197,15 @@ class Node(
             delay(NODE_KEEPALIVE_MS)
             tick++
             if (tick % OUTBOX_EVERY == 0 && outbox.size() > 0) flushOutbox()
-            // TODO(phase 2): device round every OUTBOX_EVERY ticks; presence round every 2 ticks.
+            if (tick % OUTBOX_EVERY == 0 && relays.isNotEmpty()) spawn { deviceSync.deviceRound() }  // can take a while
+            if (tick % PRESENCE_EVERY == 0) spawn { signals.presenceRound() }
         }
     }
+
+    internal fun launchTask(block: suspend () -> Unit) = spawn(block)
+
+    /** One request to one address (see [req]), for the signal code. */
+    internal suspend fun reqTo(addr: String, pubkey: String?, msg: JsonObject): JsonObject? = req(addr, pubkey, msg)
 
     private fun spawn(block: suspend () -> Unit) {
         scope.launch {
@@ -348,7 +389,9 @@ class Node(
     }
 
     // --- presence --------------------------------------------------------------------------------
-    // TODO(phase 2): send typing/read signals, _presence_round (only the receiving side exists here).
+    fun sendTyping(pubkey: String) = signals.sendTyping(pubkey)
+    fun sendRead(pubkey: String) = signals.sendRead(pubkey)
+    internal fun markSeen(pubkey: String) = seen(pubkey)
 
     private fun seen(pubkey: String) {
         val wasOnline = online(pubkey)
@@ -436,7 +479,7 @@ class Node(
             refreshRecord()
             spawn { announce() }
         }
-        // TODO(phase 2): spawn { syncDevices() } -- another device of ours is around: compare notes.
+        spawn { deviceSync.syncDevices() }  // another device of ours is around: compare notes
     }
 
     /** They're reachable again: deliver what we owe them and fill gaps in our chat. */
@@ -541,6 +584,11 @@ class Node(
                 return OK
             }
 
+            "device_sync" -> return deviceSync.handle(msg)
+
+            // The phone is never a vault host.
+            "vault_put", "vault_get" -> return failed("this hub doesn't store device snapshots")
+
             "msg" -> {
                 val inner = openSealedMsg(msg) ?: return failed("bad message")
                 val from = inner["from"].asString()!!
@@ -553,7 +601,7 @@ class Node(
                 return OK
             }
         }
-        // TODO(phase 2): device_sync, vault_put, vault_get. (phase 3): group_*, file_offer, file_get, group_handoff, punch, forward.
+        // TODO(phase 3): group_*, file_offer, file_get, group_handoff, punch, forward.
         return failed("unknown type ${kind?.let { "'$it'" } ?: "None"}")
     }
 

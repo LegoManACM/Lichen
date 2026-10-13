@@ -59,7 +59,7 @@ private val ACTIONS = setOf("react", "edit", "delete")  // TODO(phase 2): replie
  * no IO on the calling thread; the data folder is loaded in the background. After [stop], [start] can be
  * called again (a fresh Node on the same stores).
  */
-class NodeClient(private val dataDir: File) : ChatClient {
+class NodeClient(private val dataDir: File, private val logSink: (String) -> Unit = {}) : ChatClient {
     private class Loaded(
         val settings: Settings, val ident: Identity, val enc: EncKey, val device: String,
         val phonebook: Phonebook, val dms: DmStore, val outbox: Outbox, val trust: TrustStore,
@@ -78,6 +78,20 @@ class NodeClient(private val dataDir: File) : ChatClient {
     override val contacts: StateFlow<List<Contact>> = _contacts
     override val people: StateFlow<List<Contact>> = _people
     override val events: SharedFlow<ClientEvent> = _events
+
+    private val _typing = MutableStateFlow<Set<String>>(emptySet())
+    private val _requests = MutableStateFlow<List<Contact>>(emptyList())
+    private val _log = MutableStateFlow<List<String>>(emptyList())
+    override val typing: StateFlow<Set<String>> = _typing
+    override val requests: StateFlow<List<Contact>> = _requests
+    override val log: StateFlow<List<String>> = _log
+    private val logLock = Any()
+
+    private fun nodeLog(line: String) {
+        val stamped = "${java.time.LocalTime.now().withNano(0)} $line"
+        synchronized(logLock) { _log.value = (_log.value + stamped).takeLast(200) }
+        try { logSink(line) } catch (_: Exception) { }
+    }
 
     private val chats = ConcurrentHashMap<String, MutableStateFlow<List<ChatMessage>>>()
     private val unread = ConcurrentHashMap<String, Int>()
@@ -132,9 +146,10 @@ class NodeClient(private val dataDir: File) : ChatClient {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             run = scope
             val n = Node(l.settings.name, l.ident, l.enc, l.phonebook, l.dms, l.outbox, l.trust,
-                relays = l.settings.hubs, device = l.device,
+                relays = l.settings.hubs, device = l.device, log = ::nodeLog, syncDir = dataDir,
                 onMessage = { rec, text, m -> onIncoming(l, rec, text, m) },
                 onEvent = { kind, pk, count ->
+                    if (kind == "typing") ioScope.launch { delay((TYPING_SHOWN * 1000).toLong() + 100); markDirty() }  // let it expire
                     if (kind == "owed" && pk != null) {
                         _events.tryEmit(ClientEvent.Log("${displayName(l, pk)} has $count message(s) for you; they'll arrive when they're online"))
                     }
@@ -154,6 +169,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
     override suspend fun stop() {
         lifecycle.withLock {
             runningNode = null
+            node?.finalSync()
             node?.stop()
             node = null
             run?.cancel()
@@ -225,7 +241,15 @@ class NodeClient(private val dataDir: File) : ChatClient {
 
     override fun markRead(pubkey: String) {
         if (unread.remove(pubkey) != null) { saveUnread(); markDirty() }
-        // TODO(phase 2): send a read receipt (node.send_read).
+        runningNode?.sendRead(pubkey)
+    }
+
+    override fun typing(pubkey: String) { runningNode?.sendTyping(pubkey) }
+
+    override fun safetyCode(pubkey: String): String = loaded?.let { dev.lichen.core.safetyCode(it.ident.pubkey, pubkey) } ?: ""
+
+    override suspend fun setVerified(pubkey: String, verified: Boolean) = withContext(Dispatchers.IO) {
+        loading.await().trust.setVerified(pubkey, if (verified) Canonical.nowSeconds() else null)
     }
 
     private val unreadLock = Any()
@@ -286,6 +310,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
             online = runningNode?.online(pk) == true,
             unread = unread[pk] ?: 0,
             lastMessage = if (withLast) messagesOf(l, pk).lastOrNull() else null,
+            verified = l.trust.isVerified(pk),
         )
     }
 
@@ -296,6 +321,9 @@ class NodeClient(private val dataDir: File) : ChatClient {
         val keys = (l.trust.keys("trusted") + l.dms.peers()).filter { it != me && !l.trust.blocked(it) }.distinct()
         _contacts.value = keys.map { contactFor(l, it) }
             .sortedWith(compareByDescending<Contact> { it.lastMessage?.ts ?: 0.0 }.thenBy { it.displayName.lowercase() })
+        _requests.value = _contacts.value.filter { it.trust == Trust.UNKNOWN && it.lastMessage != null }
+        val now = Canonical.nowSeconds()
+        _typing.value = runningNode?.typing?.filterValues { it > now }?.keys ?: emptySet()
         _people.value = l.phonebook.all().filter { it.pubkey != me }.map { contactFor(l, it.pubkey, withLast = false) }
             .sortedBy { it.displayName.lowercase() }
     }

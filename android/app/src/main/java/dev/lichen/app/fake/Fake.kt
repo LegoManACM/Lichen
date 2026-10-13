@@ -88,6 +88,18 @@ class FakeChatClient(private val settings: Settings, private val profileId: Stri
     override val people = MutableStateFlow<List<Contact>>(emptyList())
     override val events = MutableSharedFlow<ClientEvent>(extraBufferCapacity = 16)
 
+    override val typing = MutableStateFlow<Set<String>>(emptySet())
+    override val requests = MutableStateFlow<List<Contact>>(emptyList())
+    override val log = MutableStateFlow(listOf("fake node: nothing to log"))
+    private val verifiedKeys = HashSet<String>()
+
+    override fun typing(pubkey: String) {}
+    override fun safetyCode(pubkey: String): String = "12345 67890 12345 67890"
+    override suspend fun setVerified(pubkey: String, verified: Boolean) {
+        if (verified) verifiedKeys.add(pubkey) else verifiedKeys.remove(pubkey)
+        refresh()
+    }
+
     override fun messages(pubkey: String): StateFlow<List<ChatMessage>> = flow(pubkey)
 
     private fun now() = System.currentTimeMillis() / 1000.0
@@ -107,6 +119,7 @@ class FakeChatClient(private val settings: Settings, private val profileId: Stri
 
     private fun contactOf(p: Person) = Contact(
         p.pubkey, p.name, p.nickname, p.trust, p.online, unread[p.pubkey] ?: 0, flow(p.pubkey).value.lastOrNull(),
+        p.pubkey in verifiedKeys,
     )
 
     @Synchronized
@@ -116,6 +129,7 @@ class FakeChatClient(private val settings: Settings, private val profileId: Stri
             .map { contactOf(it) }
             .filter { it.lastMessage != null }
             .sortedByDescending { it.lastMessage?.ts ?: 0.0 }
+        requests.value = contacts.value.filter { it.trust == Trust.UNKNOWN }
         people.value = everyone.map { contactOf(it) }.sortedBy { it.displayName.lowercase() }
     }
 

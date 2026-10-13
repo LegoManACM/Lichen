@@ -136,16 +136,19 @@ private fun LichenApp() {
                 ChatScreen(c, id, pk, onBack = ::pop, onInfo = { push("info:$pk") })
             }
             top.startsWith("info:") -> InfoScreen(c, top.removePrefix("info:"), onBack = ::pop)
+            top == "requests" -> RequestsScreen(c, onBack = ::pop, onOpenChat = { pk -> push("chat:$pk") })
+            top == "debuglog" -> DebugLogScreen(c, onBack = ::pop)
             top == "people" -> PeopleScreen(c, onBack = ::pop, onOpenChat = { pk ->
                 stack = arrayListOf("chat:$pk")
             })
             top == "profile" -> ProfileScreen(c, onBack = ::pop, onSaveHubs = { name, hubs ->
                 // The profile's client is stopped, its settings saved and a new client opened; the service starts it.
                 scope.launch { profiles.saveSettings(id, Settings(name, hubs)) }
-            }, onDelete = { deleting = infos.firstOrNull { it.id == id } })
+            }, onDelete = { deleting = infos.firstOrNull { it.id == id } }, onDebugLog = { push("debuglog") })
             else -> ContactsScreen(
                 c, infos.firstOrNull { it.id == id }?.name ?: "Lichen", id, onSwitcher = { switcher = true },
                 onOpenChat = { push("chat:$it") }, onNewChat = { push("people") }, onProfile = { push("profile") },
+                onRequests = { push("requests") },
             )
         }
     }

@@ -13,7 +13,7 @@ import java.io.File
  * Data-folder setup on the file system: same file names/formats as the Python node's data folder, plus
  * settings.json for what Python keeps in lichen.yaml. Key files get no passphrase here (app-private storage).
  */
-open class FileSetup : LichenSetup {
+open class FileSetup(private val logSink: (String) -> Unit = {}) : LichenSetup {
     override fun hasIdentity(dataDir: File): Boolean = File(dataDir, "key").exists()
 
     override fun settings(dataDir: File): Settings? {
@@ -58,7 +58,7 @@ open class FileSetup : LichenSetup {
         }
     }
 
-    override fun open(dataDir: File): ChatClient = dev.lichen.core.node.NodeClient(dataDir)
+    override fun open(dataDir: File): ChatClient = dev.lichen.core.node.NodeClient(dataDir, logSink)
 }
 
 /** The two options we need from a lichen.yaml. */
