@@ -14,8 +14,10 @@ from pathlib import Path
 
 from lichen.crypto import encrypt
 from lichen.files import CHUNK
+from lichen import keyfile
+from lichen.commands import Commands
 from lichen.groups import GroupRecord
-from lichen.identity import Identity, canonical
+from lichen.identity import Identity, canonical, safety_code
 from lichen.node import Node
 from lichen.records import Record
 from lichen.wire import request
@@ -412,6 +414,48 @@ async def main() -> None:
     assert erin.dms.messages(dave.ident.pubkey)[1]["id"] == lost["id"], "restored in its place, by time"
     assert await erin.sync_dm(dave.ident.pubkey) == 0
     print(f"   erin was missing {lost['text']!r}; sync restored it (and a second sync found nothing new)")
+
+    step("identity: an impostor takes the name 'erin'; names get disambiguated and flagged")
+    fake = Node.from_dir(tmp / "fake-erin", "erin", port=0, bootstrap=[PHONEBOOK], relay=PHONEBOOK,
+                         direct=False, stun=[])
+    await fake.start()
+    await asyncio.sleep(SETTLE)
+    said = []
+    cmds = Commands(dave, said.append)
+    real_name, fake_name = cmds.name_of(erin.ident.pubkey), cmds.name_of(fake.ident.pubkey)
+    print(f"   dave now sees: {real_name} (his contact) and {fake_name}")
+    assert real_name.startswith("erin#") and fake_name.startswith("erin#") and real_name != fake_name
+    assert not cmds.impostor_warning(erin.ident.pubkey)
+    assert "different key" in cmds.impostor_warning(fake.ident.pubkey)
+    assert cmds.peer("erin") is None and "several people match" in said[-1]
+    await cmds.run(f"/nick {real_name} erin")
+    assert cmds.name_of(erin.ident.pubkey) == "erin" and cmds.peer("erin").pubkey == erin.ident.pubkey
+    print(f"   after /nick: the real one is just 'erin' to dave; the impostor stays {cmds.name_of(fake.ident.pubkey)} (flagged)")
+    await fake.send(dave.ident.pubkey, "hi it's erin, new account")
+    assert dave.trust.get(fake.ident.pubkey) == "unknown", "the impostor's message is only a request"
+
+    step("identity: safety codes match on both sides; /verify marks the contact")
+    erin_cmds = Commands(erin, lambda _: None)
+    assert safety_code(dave.ident.pubkey, erin.ident.pubkey) == safety_code(erin.ident.pubkey, dave.ident.pubkey)
+    assert safety_code(dave.ident.pubkey, fake.ident.pubkey) != safety_code(dave.ident.pubkey, erin.ident.pubkey)
+    await cmds.run("/verify erin")
+    assert safety_code(dave.ident.pubkey, erin.ident.pubkey) in said[-4]
+    await cmds.run("/verify erin yes")
+    assert dave.trust.is_verified(erin.ident.pubkey)
+    print(f"   code {safety_code(dave.ident.pubkey, erin.ident.pubkey)} matches for both; erin is verified")
+    await fake.stop()
+
+    step("identity: passphrase-protected keys are useless without the passphrase")
+    locked = tmp / "locked"
+    Node.from_dir(locked, "locked")
+    keyfile.change_passphrase(locked, None, "hunter2")
+    for attempt in (None, "wrong"):
+        try:
+            Node.from_dir(locked, "locked", passphrase=attempt)
+            raise AssertionError("opened without the right passphrase")
+        except (keyfile.PassphraseNeeded, keyfile.WrongPassphrase) as e:
+            print(f"   passphrase {attempt!r}: refused ({type(e).__name__})")
+    assert Node.from_dir(locked, "locked", passphrase="hunter2").ident.pubkey
 
     step("mallory forges a record claiming alice lives at mallory's address")
     mallory = Identity.generate()

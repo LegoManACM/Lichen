@@ -147,9 +147,10 @@ class Node:
         self._owed_seen: dict[str, set[str]] = {}  # IOU item ids already reported, per sender
 
     @classmethod
-    def from_dir(cls, data_dir: Path, name: str, downloads: Path | None = None, **kw) -> "Node":
-        ident = Identity.load_or_create(data_dir / "key")
-        enc = EncKey.load_or_create(data_dir / "enckey")
+    def from_dir(cls, data_dir: Path, name: str, downloads: Path | None = None, passphrase: str | None = None,
+                 **kw) -> "Node":
+        ident = Identity.load_or_create(data_dir / "key", passphrase)
+        enc = EncKey.load_or_create(data_dir / "enckey", passphrase)
         hub = RelayHub(data_dir / "mailbox.json", log=kw.get("log", lambda s: None))
         return cls(name, ident, enc, Phonebook(data_dir / "phonebook.json"),
                    GroupStore(ident, enc, data_dir / "groups.json"), hub=hub,

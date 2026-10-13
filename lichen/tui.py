@@ -23,7 +23,7 @@ from textual.widgets import DirectoryTree, Footer, Header, Input, Label, ListIte
 
 from .commands import Commands, link
 from .files import human_size
-from .identity import short
+from .identity import fingerprint, short
 
 MARKERS = {
     "direct": "[green]●[/]",  # punched peer-to-peer UDP path
@@ -314,7 +314,11 @@ class ChatApp(App):
             rec = node.phonebook.get(pk)
             marker = MARKERS[link(node, rec)] if rec else "[dim]○[/]"
             name = escape(self._who(pk))
-            label = f"{marker} {name}" if pk not in strangers else f"{marker} [i]{name}[/] [yellow]?[/]"
+            if pk in strangers:
+                warn = " [red]⚠[/]" if self.commands.impostor_warning(pk) else ""
+                label = f"{marker} [i]{name}[/] [yellow]?[/]{warn}"
+            else:
+                label = f"{marker} {name}" + (" [green]✓[/]" if node.trust.is_verified(pk) else "")
             contacts.append((f"c-{pk}", label + self._badge(("dm", pk))))
         self._sync_list(self.query_one("#contacts", ListView), "c-", contacts)
 
@@ -410,6 +414,8 @@ class ChatApp(App):
                 chat.write(self._entry_line(entry))
             if not history:
                 chat.write("[dim]No messages yet. Say hi! (Ctrl+F sends a file)[/]")
+            if key[0] == "dm" and self.commands and (warning := self.commands.impostor_warning(key[1])):
+                chat.write(f"[bold red]{escape(warning)}[/]")
             if key[0] == "dm" and self.commands and key[1] in self.commands.message_requests():
                 who = escape(self._who(key[1]))
                 chat.write(f"[yellow]{who} isn't one of your contacts.[/] Reply or /accept {who} to add them; "
@@ -467,7 +473,9 @@ class ChatApp(App):
             path = self.node.udp.path(ident)
             where = f" {path[0]}:{path[1]}" if path else ""
             trust = {"trusted": "contact", "blocked": "blocked"}.get(self.node.trust.get(ident), "not a contact")
-            title.update(f"{escape(self._convo_name(self.current))}  [dim]· {trust} · {how}{where}[/]{busy}")
+            verified = ("[green]✓ verified[/]" if self.node.trust.is_verified(ident)
+                        else f"[dim]{fingerprint(ident)} · /verify to check[/]")
+            title.update(f"{escape(self._convo_name(self.current))}  {verified}  [dim]· {trust} · {how}{where}[/]{busy}")
         else:
             g = self.node.groups.get(ident)
             if g:

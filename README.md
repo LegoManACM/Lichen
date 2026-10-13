@@ -276,6 +276,26 @@ Every key is **trusted** (a contact), **unknown**, or **blocked** (`trust.json`)
   sends the owner a signed leave request, and the owner's node removes you (rotating the group key).
 - Pending invites, requests, offers and trust levels are saved, so nothing is lost across restarts.
 
+### Making sure people are who they say they are
+
+Names aren't unique: anyone can start Lichen with `--name alice`. What can't be faked is the **key**;
+everything (messages, records, invites) is signed with it. So Lichen helps you keep names and keys
+straight:
+
+- **Clashing names get a key prefix.** If two keys both call themselves "alice", you see `alice#3fK9xQ`
+  and `alice#Wc1dPq`, and `/msg alice` asks which one you mean instead of guessing.
+- **Lookalikes are flagged.** If a stranger uses the same name as one of your contacts, they're marked
+  ⚠ and their chat opens with a warning showing the different key.
+- **`/nick NAME NICKNAME`** gives someone your own name for them. Only you see it, and nobody else can
+  take it over, whatever they call themselves.
+- **`/verify NAME`** shows a 20-digit safety code for the two of you. Compare it with them in person, on
+  a call, or in another app you trust; if it matches, `/verify NAME yes` marks them ✓ verified.
+  `/whoami` shows your own fingerprint.
+- **Passphrase for your keys:** `lichen --passphrase` encrypts your key files (scrypt +
+  ChaCha20-Poly1305), so a copied data folder can't be used to sign as you or read your messages.
+  You're asked for it at startup; unattended hubs can set `LICHEN_PASSPHRASE`. Run it again to change
+  or remove it.
+
 ### Hosting a group: handing it over or deleting it
 
 The person who created a group is its **host**: only they can invite, remove, or change settings. The
@@ -378,6 +398,8 @@ Over UDP, every request above can also travel on a punched path. Datagrams are J
   protocol around them hasn't been audited. Don't rely on it for anything sensitive yet.
 - **No forward secrecy for direct messages:** if someone steals your `enckey` file, they can decrypt
   past direct messages they recorded. (Groups are better: old epoch keys don't decrypt new epochs.)
+- **First contact is trust-on-first-use:** until you `/verify` someone, you're trusting that the key you
+  messaged is theirs. Names can be copied; compare safety codes for anyone who matters.
 - **Contact records aren't encrypted:** the phonebook reveals everyone's name, key and addresses
   (including direct IPs for nodes that advertise one) to everyone.
 - **Spam / abuse:** anyone can join a hub and flood the phonebook with fake identities. Strangers'

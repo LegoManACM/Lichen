@@ -26,6 +26,20 @@ def short(pubkey: str) -> str:
     return pubkey[:8]
 
 
+def fingerprint(pubkey: str) -> str:
+    """A key in readable groups, for comparing out loud: e.g. 3fK9 xQ2m 7aLp Wc1d."""
+    return " ".join(pubkey[i:i + 4] for i in range(0, 16, 4))
+
+
+def safety_code(a: str, b: str) -> str:
+    """Same 20 digits on both sides of a conversation; compare them to check you have the right key."""
+    import hashlib
+
+    digest = hashlib.sha256("|".join(sorted([a, b])).encode()).digest()
+    digits = str(int.from_bytes(digest[:12], "big")).zfill(29)[-20:]
+    return " ".join(digits[i:i + 5] for i in range(0, 20, 5))
+
+
 class Identity:
     def __init__(self, key: Ed25519PrivateKey):
         self._key = key
@@ -36,13 +50,13 @@ class Identity:
         return cls(Ed25519PrivateKey.generate())
 
     @classmethod
-    def load_or_create(cls, path: Path) -> "Identity":
+    def load_or_create(cls, path: Path, passphrase: str | None = None) -> "Identity":
+        from .keyfile import read_secret, write_secret  # keyfile imports b64 helpers from here
+
         if path.exists():
-            return cls(Ed25519PrivateKey.from_private_bytes(unb64(path.read_text().strip())))
+            return cls(Ed25519PrivateKey.from_private_bytes(read_secret(path, passphrase)))
         ident = cls.generate()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        raw = ident._key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
-        path.write_text(b64(raw))
+        write_secret(path, ident._key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption()), passphrase)
         return ident
 
     def sign(self, data: bytes) -> str:

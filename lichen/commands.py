@@ -8,7 +8,7 @@ from typing import Callable
 
 from .files import human_size
 from .groups import GroupRecord
-from .identity import short
+from .identity import fingerprint, safety_code, short
 from .node import RELAY_PREFIX, Node
 from .records import Record
 
@@ -36,6 +36,10 @@ COMMANDS = [
     Spec("/group", "create|add|remove|leave|history ...", "manage groups (see below)", ("groupsub",)),
     Spec("/groups", "", "list your groups"),
     Spec("/history", "GROUP [N]", "last N messages in a group (default 20)", ("group", "text")),
+    Spec("/verify", "NAME [yes]", "compare a safety code with someone to make sure you have their real key",
+         ("peer", "text")),
+    Spec("/unverify", "NAME", "remove the verified mark", ("peer",)),
+    Spec("/nick", "NAME NICKNAME", "your own name for someone (blank to clear); only you see it", ("peer", "text")),
     Spec("/trust", "NAME", "make someone a contact", ("peer",)),
     Spec("/untrust", "NAME", "stop treating someone as a contact", ("contact",)),
     Spec("/block", "NAME", "ignore everything from someone", ("peer",)),
@@ -104,13 +108,58 @@ class Commands:
         self.out = out
 
     def name_of(self, pubkey: str) -> str:
+        """What to call someone: your nickname for them if you set one, else their own name, with a
+        key prefix ("alice#3fK9xQ") whenever another key uses the same name. One word, no spaces."""
+        node = self.node
+        if nick := node.trust.nickname(pubkey):
+            return nick
+        rec = node.phonebook.get(pubkey)
+        if not rec:
+            return short(pubkey)
+        base = rec.name.replace(" ", "_") or short(pubkey)
+        if pubkey != node.ident.pubkey and self.name_clashes(pubkey):
+            return f"{base}#{pubkey[:6]}"
+        return base
+
+    def name_clashes(self, pubkey: str) -> list[str]:
+        """Other keys whose name (or your nickname for them) is the same as this key's own name."""
         rec = self.node.phonebook.get(pubkey)
-        return rec.name if rec else short(pubkey)
+        if not rec:
+            return []
+        name = rec.name.lower()
+        same_name = [r.pubkey for r in self.node.phonebook.all() if r.pubkey != pubkey and r.name.lower() == name]
+        same_nick = [k for k, n in self.node.trust.nicknames.items() if k != pubkey and n.lower() == name]
+        return same_name + same_nick
+
+    def impostor_warning(self, pubkey: str) -> str:
+        """Non-empty if this key's name matches one of your contacts' (a likely impersonation)."""
+        node = self.node
+        if node.trust.trusted(pubkey) or node.trust.nickname(pubkey):
+            return ""
+        lookalikes = [k for k in self.name_clashes(pubkey) if node.trust.trusted(k) or node.trust.nickname(k)]
+        if not lookalikes:
+            return ""
+        rec = node.phonebook.get(pubkey)
+        return (f"⚠ {rec.name!r} is also the name of your contact {self.name_of(lookalikes[0])}, but this is a "
+                f"different key ({fingerprint(pubkey)}). It may not be who you think.")
 
     def peer(self, query: str) -> Record | None:
-        matches = [r for r in self.node.phonebook.find(query) if r.pubkey != self.node.ident.pubkey]
+        """Resolve a person by your nickname, their name, name#keyprefix, or a key prefix."""
+        node, q = self.node, query.strip()
+        name, _, prefix = q.partition("#")
+        candidates = [r for r in node.phonebook.all() if r.pubkey != node.ident.pubkey]
+        nick_hits = [r for r in candidates if (node.trust.nickname(r.pubkey) or "").lower() == q.lower()]
+        matches = nick_hits or [r for r in candidates
+                                if (r.name.replace(" ", "_").lower() == name.lower() and r.pubkey.startswith(prefix))
+                                or (not prefix and r.pubkey.startswith(q))
+                                or self.name_of(r.pubkey).lower() == q.lower()]
+        matches = list({r.pubkey: r for r in matches}.values())
         if len(matches) != 1:
-            self.out(f"  {'no' if not matches else 'ambiguous'} match for {query!r}; use a key prefix from /peers")
+            if matches:
+                options = ", ".join(self.name_of(r.pubkey) for r in matches)
+                self.out(f"  several people match {query!r}: {options}")
+            else:
+                self.out(f"  no one matches {query!r}; see /peers")
             return None
         return matches[0]
 
@@ -192,7 +241,7 @@ class Commands:
             g = next((g for g in node.groups.all() if tokens and len(tokens) > 2 and g.name == tokens[2]), None)
             return sorted({self.name_of(m) for m in g.members if m != node.ident.pubkey}, key=str.lower) if g else []
         if kind == "peer":
-            names = {r.name for r in node.phonebook.all() if r.pubkey != node.ident.pubkey}
+            names = {self.name_of(r.pubkey) for r in node.phonebook.all() if r.pubkey != node.ident.pubkey}
             return sorted(names, key=str.lower)
         if kind in ("contact", "blocked"):
             level = "trusted" if kind == "contact" else "blocked"
@@ -318,19 +367,23 @@ class Commands:
             out(HELP)
         elif cmd == "/whoami":
             status = node.relay_status()
-            out(f"{node.name} {node.ident.pubkey} at {', '.join(node.addrs)}{f' ({status})' if status else ''}")
+            out(f"{node.name} at {', '.join(node.addrs)}{f' ({status})' if status else ''}")
+            out(f"  your key: {node.ident.pubkey}")
+            out(f"  fingerprint: {fingerprint(node.ident.pubkey)}  (people can compare this to check it's really you)")
             if node.outbox.items:
                 out(f"  {len(node.outbox.items)} item(s) waiting for their recipients to come online")
             if node.udp.public:
                 out(f"  public UDP address (as the internet sees it): {node.udp.public[0]}:{node.udp.public[1]}")
         elif cmd == "/peers":
             labels = {"you": "(you)", "relay": "[via relay]", "open": ""}
-            for r in sorted(node.phonebook.all(), key=lambda r: r.name):
+            for r in sorted(node.phonebook.all(), key=lambda r: self.name_of(r.pubkey).lower()):
                 kind = link(node, r)
                 path = node.udp.path(r.pubkey)
                 how = f"[direct {path[0]}:{path[1]}]" if kind == "direct" else labels[kind]
                 trust = "" if kind == "you" else {"trusted": "contact", "blocked": "BLOCKED"}.get(node.trust.get(r.pubkey), "")
-                out(f"  {r.name:<12} {short(r.pubkey)}  {trust:<8} {', '.join(r.addrs)}  {how}")
+                mark = "✓" if node.trust.is_verified(r.pubkey) else ("⚠" if self.impostor_warning(r.pubkey) else " ")
+                own = f" (calls themselves {r.name})" if node.trust.nickname(r.pubkey) else ""
+                out(f"  {mark} {self.name_of(r.pubkey):<16} {fingerprint(r.pubkey)}  {trust:<8} {how}{own}")
         elif cmd == "/join" and rest:
             await node.join(rest)
         elif cmd == "/move" and rest:
@@ -415,6 +468,33 @@ class Commands:
         elif cmd in ("/accept", "/decline") and rest:
             if found := self._resolve_pending(rest):
                 await self._answer_request(cmd == "/accept", *found)
+        elif cmd == "/verify" and rest:
+            target, _, answer = rest.partition(" ")
+            if r := self.peer(target):
+                who = self.name_of(r.pubkey)
+                if answer.strip().lower() in ("yes", "y", "confirm"):
+                    node.trust.set_verified(r.pubkey, time.time())
+                    if node.trust.get(r.pubkey) == "unknown":
+                        node.trust.set(r.pubkey, "trusted")
+                    out(f"  ✓ {who} is verified")
+                else:
+                    out(f"  safety code with {who}:  {safety_code(node.ident.pubkey, r.pubkey)}")
+                    out(f"  Compare it with {who} in person, on a call, or in another app you trust.")
+                    out(f"  They run /verify {node.name} and should see exactly the same digits.")
+                    out(f"  If it matches: /verify {who} yes    If not, you are not talking to the real {r.name}.")
+        elif cmd == "/unverify" and rest:
+            if r := self.peer(rest):
+                node.trust.set_verified(r.pubkey, None)
+                out(f"  {self.name_of(r.pubkey)} is no longer marked verified")
+        elif cmd == "/nick" and rest:
+            target, _, nickname = rest.partition(" ")
+            if r := self.peer(target):
+                try:
+                    node.trust.set_nickname(r.pubkey, nickname.strip() or None)
+                except ValueError as e:
+                    out(f"  {e}")
+                else:
+                    out(f"  you now see them as {self.name_of(r.pubkey)}")
         elif cmd in ("/trust", "/untrust", "/block", "/unblock") and rest:
             if r := self.peer(rest):
                 level = {"/trust": "trusted", "/untrust": "unknown", "/block": "blocked", "/unblock": "unknown"}[cmd]

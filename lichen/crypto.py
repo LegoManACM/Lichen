@@ -25,12 +25,13 @@ class EncKey:
         self.pub = b64(key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))
 
     @classmethod
-    def load_or_create(cls, path: Path) -> "EncKey":
+    def load_or_create(cls, path: Path, passphrase: str | None = None) -> "EncKey":
+        from .keyfile import read_secret, write_secret
+
         if path.exists():
-            return cls(X25519PrivateKey.from_private_bytes(unb64(path.read_text().strip())))
+            return cls(X25519PrivateKey.from_private_bytes(read_secret(path, passphrase)))
         key = cls(X25519PrivateKey.generate())
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(b64(key._key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())))
+        write_secret(path, key._key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption()), passphrase)
         return key
 
     @classmethod
