@@ -6,6 +6,7 @@ __pycache__/
 lichen.yaml
 lichen.yml
 lichen.json
+me.lichen
 build/
 dist/
 *.egg-info/
