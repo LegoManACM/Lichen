@@ -224,4 +224,32 @@ class FilesIntegrationTest {
             assertEquals("unknown file", reply["error"].asString())
         } finally { phone.close() }
     }
+
+    @Test
+    fun fileOffersSyncWithASiblingDeviceAndTheDigestsAgree() = withPeer { py ->
+        val phone = Phone(listOf(py.hubAddr))
+        try {
+            start(phone)
+            val alice = py.userPk!!
+            py.call("ok", "cmd" to "start_sibling", "keydir" to phone.dir.absolutePath, "name" to "kate")
+            val a = py.sendFile("user", phone.pubkey, "one.bin", 20_000, seed = 5)["file_id"].asString()!!
+            val b = py.sendFile("user", phone.pubkey, "two.bin", 30_000, seed = 6)["file_id"].asString()!!
+            eventually("phone has both offers") { phone.transfer(a) != null && phone.transfer(b) != null }
+            phone.client.files.decline(b)
+            eventually("sibling knows both offers") {
+                val inc = py.call("offers", "cmd" to "offers", "who" to "sibling")["incoming"] as JsonObject
+                a in inc.keys && b in inc.keys
+            }
+            eventually("sibling sees the decline and the digests agree", 30_000) {
+                py.call("synced", "cmd" to "sync_devices", "who" to "sibling")
+                val inc = py.call("offers", "cmd" to "offers", "who" to "sibling")["incoming"] as JsonObject
+                (inc[b] as JsonObject)["status"].asString() == "declined" &&
+                    py.call("digest", "cmd" to "digest", "who" to "sibling")["digest"].asString() == phone.client.node()!!.deviceSync.pack().digest
+            }
+            val inc = py.call("offers", "cmd" to "offers", "who" to "sibling")["incoming"] as JsonObject
+            assertEquals(phone.client.node()!!.files.let { (it as FileService).fileStore()!!.incoming().keys }, inc.keys)
+            assertEquals("pending", (inc[a] as JsonObject)["status"].asString())
+            assertEquals(alice, (inc[a] as JsonObject)["from"].asString())
+        } finally { phone.close() }
+    }
 }

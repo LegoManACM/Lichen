@@ -46,9 +46,10 @@ fun HubChip(hubs: List<HubStatus>) {
 @Composable
 fun ContactsScreen(
     client: ChatClient, profileName: String, profileId: String, onSwitcher: () -> Unit,
-    onOpenChat: (String) -> Unit, onNewChat: () -> Unit, onProfile: () -> Unit,
+    onOpenChat: (String) -> Unit, onNewChat: () -> Unit, onProfile: () -> Unit, onRequests: () -> Unit = {},
 ) {
     val contacts by client.contacts.collectAsState()
+    val requests by client.requests.collectAsState()
     val hubs by client.hubs.collectAsState()
     Scaffold(
         topBar = {
@@ -66,6 +67,7 @@ fun ContactsScreen(
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             BatteryCard()
+            if (requests.isNotEmpty()) TextButton(onClick = onRequests) { Text("Requests (${requests.size})") }
             if (contacts.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text("No chats yet. Tap New chat to say hello.", style = MaterialTheme.typography.bodyLarge)

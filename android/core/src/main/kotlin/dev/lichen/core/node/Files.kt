@@ -89,7 +89,15 @@ class FileService(
     /** The store, for device sync to register (`deviceState()` / `mergeDeviceState()`). */
     fun fileStore(): FileStore? = store
 
-    fun attach(n: Node) { node = n; n.files = this; refresh() }
+    fun attach(n: Node) {
+        node = n; n.files = this
+        store?.let { s ->
+            // Python's _state includes files.device_state() in the digest; offers changing triggers a sync.
+            n.deviceSync.register("files", StateSection(export = { s.deviceState() }, merge = { s.mergeDeviceState(it) }))
+            s.onChange = { n.deviceSync.stateChanged() }
+        }
+        refresh()
+    }
 
     fun detach() {
         node?.files = null

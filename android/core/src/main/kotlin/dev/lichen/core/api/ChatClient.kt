@@ -34,6 +34,7 @@ data class Contact(
     val online: Boolean = false,
     val unread: Int = 0,
     val lastMessage: ChatMessage? = null,
+    val verified: Boolean = false, // we compared safety codes with them (synced between our devices)
 ) {
     val displayName: String get() = nickname ?: name
 }
@@ -90,4 +91,24 @@ interface ChatClient {
 
     /** Retry the outbox, re-sync chats, re-announce. */
     suspend fun syncNow()
+
+    // --- phase 2 ---------------------------------------------------------------------------------
+
+    /** Public keys of contacts who are typing to us right now (shown ~6 s after their last signal). */
+    val typing: StateFlow<Set<String>>
+
+    /** The user is typing in the chat with [pubkey]: lets them know (throttled to once per 3 s). */
+    fun typing(pubkey: String)
+
+    /** Strangers who wrote to us (trust UNKNOWN, with messages): accept with [setTrust] TRUSTED, or block. Newest first. */
+    val requests: StateFlow<List<Contact>>
+
+    /** The 20 digits (in groups of five) both sides of this conversation see; compare them out loud. */
+    fun safetyCode(pubkey: String): String
+
+    /** Remember (or forget) that we compared safety codes with [pubkey]. */
+    suspend fun setVerified(pubkey: String, verified: Boolean)
+
+    /** The most recent node log lines (last 200), oldest first, for a debug screen. */
+    val log: StateFlow<List<String>>
 }

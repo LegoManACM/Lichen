@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 fun ChatScreen(client: ChatClient, profileId: String, pubkey: String, onBack: () -> Unit, onInfo: () -> Unit) {
     val messages by client.messages(pubkey).collectAsState()
     val people by client.people.collectAsState()
+    val typingNow by client.typing.collectAsState()
     val contact = people.firstOrNull { it.pubkey == pubkey }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -70,7 +71,7 @@ fun ChatScreen(client: ChatClient, profileId: String, pubkey: String, onBack: ()
                         Column {
                             Text(contact?.displayName ?: pubkey.take(8), style = MaterialTheme.typography.titleMedium)
                             Text(
-                                if (contact?.online == true) "online" else "offline",
+                                if (pubkey in typingNow) "typing…" else if (contact?.online == true) "online" else "offline",
                                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -78,7 +79,7 @@ fun ChatScreen(client: ChatClient, profileId: String, pubkey: String, onBack: ()
                 },
             )
         },
-        bottomBar = { Composer({ picker.launch(arrayOf("*/*")) }) { text -> scope.launch { client.send(pubkey, text) } } },
+        bottomBar = { Composer({ picker.launch(arrayOf("*/*")) }, onTyping = { client.typing(pubkey) }) { text -> scope.launch { client.send(pubkey, text) } } },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             when (contact?.trust) {
@@ -157,13 +158,13 @@ private fun StatusMark(s: MessageStatus?) {
 }
 
 @Composable
-private fun Composer(onAttach: () -> Unit, onSend: (String) -> Unit) {
+private fun Composer(onAttach: () -> Unit, onTyping: () -> Unit = {}, onSend: (String) -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
     Surface(tonalElevation = 3.dp) {
         Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(8.dp), verticalAlignment = Alignment.Bottom) {
             IconButton(onClick = onAttach) { Icon(Icons.Filled.Add, "Attach a file") }
             OutlinedTextField(
-                text, { text = it }, Modifier.weight(1f), placeholder = { Text("Message") }, maxLines = 5,
+                text, { text = it; if (it.isNotEmpty()) onTyping() }, Modifier.weight(1f), placeholder = { Text("Message") }, maxLines = 5,
                 shape = RoundedCornerShape(24.dp),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
             )
