@@ -27,6 +27,19 @@ class Phonebook:
         self.save()
         return True
 
+    def merge_all(self, records) -> int:
+        """merge() for many records with one save at the end. Returns how many changed anything."""
+        n = 0
+        for rec in records:
+            if rec is not None and rec.valid():
+                cur = self.records.get(rec.pubkey)
+                if not cur or cur.seq < rec.seq:
+                    self.records[rec.pubkey] = rec
+                    n += 1
+        if n:
+            self.save()
+        return n
+
     def get(self, pubkey: str) -> Record | None:
         return self.records.get(pubkey)
 

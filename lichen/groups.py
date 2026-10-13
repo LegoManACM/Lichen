@@ -130,7 +130,7 @@ class GroupStore:
         self.status: dict[str, str] = {}
         self.status_ts: dict[str, float] = {}  # when our status last changed (newest wins across devices)
         self.logs: dict[str, dict[str, dict]] = {}  # group -> msg id -> {"outer", "inner"}
-        self.on_change = None  # called when our membership status changes (device sync hooks in here)
+        self.on_change = None  # called when anything changes (device sync hooks in here)
         if path and path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
             if data.get("version") == FORMAT_VERSION:
@@ -155,6 +155,9 @@ class GroupStore:
         self.status[group_id] = status
         self.status_ts[group_id] = ts or time.time()
         self.save()
+        self._changed()
+
+    def _changed(self) -> None:
         if self.on_change:
             self.on_change()
 
@@ -173,6 +176,7 @@ class GroupStore:
         if opened:
             keys.update({int(e): unb64(k) for e, k in json.loads(opened).items()})
         self.save()
+        self._changed()
         return True
 
     def purge(self, group_id: str, status: str = "deleted") -> None:
@@ -252,6 +256,7 @@ class GroupStore:
         clean_outer = {"group": gid, "epoch": epoch, "n": outer["n"], "ct": ct, "id": outer["id"]}
         self.logs[gid][outer["id"]] = {"outer": clean_outer, "inner": inner}
         self.save()
+        self._changed()
         return inner
 
     def has(self, group_id: str, msg_id: str) -> bool:
@@ -297,16 +302,19 @@ class GroupStore:
 
     # --- syncing between your own devices -----------------------------------------------------------
 
-    def device_state(self, recent: int = 200) -> dict:
+    def device_state(self, keep: int | None = None) -> dict:
         """Everything another device of ours needs: records, keys, epoch history (if we host), our
-        status with its timestamp, and recent messages (solo groups have nobody else to sync from)."""
+        status with its timestamp, and the message log (the newest `keep` of each group, if given)."""
+        def log(gid: str) -> list[dict]:
+            entries = sorted(self.logs.get(gid, {}).values(), key=lambda m: (m["inner"]["ts"], m["outer"]["id"]))
+            return [m["outer"] for m in (entries[-keep:] if keep else entries)]
+
         return {gid: {"record": rec.to_dict(),
                       "keys": {str(e): b64(k) for e, k in self.keys.get(gid, {}).items()},
                       "epochs": {str(e): m for e, m in self.epochs.get(gid, {}).items()},
                       "status": self.status.get(gid, "pending"), "status_ts": self.status_ts.get(gid, 0),
-                      "log": [m["outer"] for m in sorted(self.logs.get(gid, {}).values(),
-                                                         key=lambda m: m["inner"]["ts"])][-recent:]}
-                for gid, rec in self.groups.items()}
+                      "log": log(gid)}
+                for gid, rec in sorted(self.groups.items())}
 
     def merge_device_state(self, state: dict) -> list[str]:
         """Merge another device's device_state(). Returns the ids of groups that changed for us."""
@@ -319,19 +327,21 @@ class GroupStore:
                 before = (self.groups.get(gid).seq if gid in self.groups else None, self.status.get(gid),
                           len(self.logs.get(gid, {})))
                 self.merge(rec)
+                self.logs.setdefault(gid, {})
+                ts = float(g.get("status_ts", 0))
+                valid = g.get("status") in ("pending", "accepted", "declined", "left", "removed", "deleted")
+                if valid and (gid not in self.status or ts > self.status_ts.get(gid, 0)):
+                    self.status[gid], self.status_ts[gid] = g["status"], ts
+                    if g["status"] == "deleted":
+                        self.logs[gid], self.keys[gid], self.epochs[gid] = {}, {}, {}
+                if self.status.get(gid) == "deleted":
+                    continue  # gone for good: don't let a device that hasn't heard bring the keys back
                 keys = self.keys.setdefault(gid, {})
                 for e, k in g.get("keys", {}).items():
                     keys.setdefault(int(e), unb64(k))
                 epochs = self.epochs.setdefault(gid, {})
                 for e, m in g.get("epochs", {}).items():
                     epochs.setdefault(int(e), {"mode": m["mode"], "start": float(m["start"])})
-                self.logs.setdefault(gid, {})
-                ts = float(g.get("status_ts", 0))
-                if ts > self.status_ts.get(gid, 0) and g.get("status") in ("pending", "accepted", "declined",
-                                                                             "left", "removed", "deleted"):
-                    self.status[gid], self.status_ts[gid] = g["status"], ts
-                    if g["status"] == "deleted":
-                        self.logs[gid], self.keys[gid], self.epochs[gid] = {}, {}, {}
                 for outer in g.get("log", []):
                     if isinstance(outer, dict):
                         self.add_message(outer)

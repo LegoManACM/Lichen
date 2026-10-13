@@ -14,7 +14,7 @@ the recipient attaches, the hub tells it who owes it what and nudges each sender
 let the recipient recognise the same IOU held by several hubs, and its stores drop duplicates.
 
 Several devices can share one identity (see devices.py): each attaches with its own device id, and
-the hub forwards to all of them, returning the first useful reply.
+the hub forwards to all of them, returning the first useful reply (or all of them, for device sync).
 
 Attached-connection messages (JSON lines or WebSocket text messages, see wire.py):
   node  -> relay  {"type": "attach", "req": {"pubkey", "ts", "device"}, "sig"}    then  {"ok": true}
@@ -117,14 +117,19 @@ class RelayHub:
             task.cancel()
 
     async def forward(self, to: str, msg: dict, sender: str | None = None, item: str | None = None,
-                      except_device: str | None = None) -> dict:
+                      except_device: str | None = None, only_device: str | None = None, fanout: bool = False) -> dict:
         # except_device: a device syncing with its own other devices doesn't want its own request back.
-        devices = [a for d, a in self.attached.get(to, {}).items() if d != except_device]
+        # only_device: ... or it wants just one of them. fanout: hand back every device's reply
+        # ({"ok", "replies": [...]}) instead of the first useful one, so each can be compared with.
+        devices = [a for d, a in self.attached.get(to, {}).items()
+                   if d != except_device and only_device in (None, d)]
         if devices:
             # Every device of theirs gets it; any one answering is enough.
             replies = [r for r in await asyncio.gather(*(self._push(a, msg) for a in devices)) if r is not None]
             if replies:
                 self.forwarded += 1
+                if fanout:
+                    return {"ok": True, "replies": replies}
                 return next((r for r in replies if r.get("ok")), replies[0])
         if msg.get("type") in IOU_TYPES and sender and item:
             owed = self.ious.setdefault(to, {}).setdefault(sender, {"ts": 0, "items": []})

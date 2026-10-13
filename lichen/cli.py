@@ -31,9 +31,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--passphrase", dest="set_passphrase", action="store_true",
                    help="set, change or remove the passphrase protecting your key files, then exit")
     p.add_argument("--export", metavar="FILE", default=None,
-                   help="write your identity (keys, contacts, groups, chats) to FILE, encrypted, for another device")
+                   help="write your identity (keys, contacts, groups, chats) and lichen.yaml to FILE, encrypted, "
+                        "for another device")
     p.add_argument("--import", dest="import_file", metavar="FILE", default=None,
-                   help="set up this device as you, from a file made with --export")
+                   help="set up this device as you, from a file made with --export (also writes its lichen.yaml)")
     for key, (kind, help_) in config.OPTIONS.items():
         flag = "--" + key.replace("_", "-")
         if kind is list:
@@ -51,7 +52,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         p.exit(0, f"wrote {args.init}; edit it, then run: lichen"
                   f"{'' if args.init in config.DEFAULT_FILES else ' --config ' + args.init}\n")
 
-    path = args.config or config.find_default()
+    # Importing starts from the export's own config, not whatever lichen.yaml happens to be in this folder.
+    path = args.config or (None if args.import_file else config.find_default())
     settings: dict = {}
     if path:
         try:
@@ -61,7 +63,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     for key in config.OPTIONS:  # command line wins over the file
         if getattr(args, key) is not None:
             settings[key] = getattr(args, key)
-    if not settings.get("name"):
+    if not settings.get("name") and not args.import_file:  # (an import takes its name from the export)
         p.exit(1, "error: a name is required (--name NAME, or `name:` in a config file; try --init)\n")
 
     cfg = argparse.Namespace(**{key: settings.get(key) for key in config.OPTIONS})
@@ -123,6 +125,17 @@ def set_passphrase(args) -> None:
     print("passphrase set: you'll be asked for it at startup" if new else "passphrase removed")
 
 
+def export_config(args) -> str:
+    """The lichen.yaml that travels with an export: our settings minus the ones about this machine."""
+    settings = {key: getattr(args, key, None) for key in config.PORTABLE}
+    # parse_args adds the relays to bootstrap; leave them out again, they're implied.
+    settings["bootstrap"] = [b for b in args.bootstrap if b not in args.relay]
+    return config.render(settings, "# Lichen config, exported with `lichen --export` (from the device called "
+                                   f"{args.name})."
+                                   "\n# Machine-specific options (data, downloads, host, bind, port, url) "
+                                   "are left out: set them here if this device needs them.")
+
+
 def export_identity(args) -> None:
     folder = data_dir(args)
     key_pass = unlock(args)
@@ -131,22 +144,48 @@ def export_identity(args) -> None:
     if not passphrase or getpass.getpass("repeat: ") != passphrase:
         raise SystemExit("passphrases empty or didn't match; nothing written")
     try:
-        devices.export_identity(folder, Path(args.export), passphrase, key_pass)
+        devices.export_identity(folder, Path(args.export), passphrase, key_pass, config=export_config(args))
     except ValueError as e:
         raise SystemExit(f"error: {e}")
-    print(f"wrote {args.export}. On the other device: lichen --import {Path(args.export).name}")
+    print(f"wrote {args.export} (keys, chats, groups, contacts and a lichen.yaml). "
+          f"On the other device: lichen --import {Path(args.export).name}")
 
 
 def import_identity(args) -> None:
-    folder = data_dir(args)
+    src = Path(args.import_file)
     passphrase = getpass.getpass(f"passphrase for {args.import_file}: ")
+    try:
+        text = devices.export_config(src, passphrase)
+        settings = config.parse(text, False, "the export's lichen.yaml") if text else {}
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"error: {e}")
+    args.name = args.name or settings.get("name")
+    if not args.name:
+        raise SystemExit("error: this export has no lichen.yaml in it (it's from an older version): "
+                         "say what to call this device with --name NAME")
+    folder = data_dir(args)
     keep = input("protect the keys on this device with the same passphrase? [Y/n] ").strip().lower() != "n"
     try:
-        devices.import_identity(Path(args.import_file), folder, passphrase, passphrase if keep else None)
+        devices.import_identity(src, folder, passphrase, passphrase if keep else None)
     except ValueError as e:
         raise SystemExit(f"error: {e}")
-    print(f"this device is now you (data in {folder}). Use the same hubs (relay) as your other device, "
-          "then run lichen; your chats fill in from the people you talk to.")
+    wrote = None
+    if text:
+        dest = Path(config.DEFAULT_FILES[0])
+        if args.config_path and Path(args.config_path).suffix.lower() in (".yaml", ".yml"):
+            dest = Path(args.config_path)
+        if dest.exists():  # never overwrite a config that's already here
+            dest = dest.with_name(f"{dest.stem}.from-export{dest.suffix}")
+        if not dest.exists():
+            dest.write_text(text, encoding="utf-8")
+            wrote = dest
+    print(f"this device is now you (data in {folder}).")
+    if wrote:
+        print(f"wrote {wrote} with your name and hubs from the export"
+              + ("" if wrote.name in config.DEFAULT_FILES else f"; run: lichen --config {wrote}"))
+    else:
+        print("use the same hubs (relay) as your other device")
+    print("Run lichen: it will fetch everything your other devices have, through your hubs, even if they're off.")
 
 
 def make_node(args, **callbacks) -> Node:
@@ -167,6 +206,7 @@ def make_node(args, **callbacks) -> Node:
         downloads=Path(args.downloads).expanduser() if getattr(args, "downloads", None) else None,
         max_file_mb=DEFAULT_MAX_MB if getattr(args, "max_file_mb", None) is None else args.max_file_mb,
         auto_download_mb=getattr(args, "auto_download_mb", None) or 0,
+        vault_mb=getattr(args, "vault_mb", None),
         **callbacks,
     )
 

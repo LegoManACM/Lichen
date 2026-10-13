@@ -32,7 +32,13 @@ OPTIONS: dict[str, tuple[type, str]] = {
     "auto_download_mb": (float, "auto-accept files up to this many MB from trusted contacts (default 0 = always ask)"),
     "ui": (str, "tui (full-screen terminal app), cli (plain prompt), or auto (default: tui in an "
                 "interactive terminal, cli when input is piped)"),
+    "vault_mb": (float, "hubs: MB of encrypted sync data for people's other devices to hold (default 256 on "
+                        "a node that accepts connections; 0 = hold none)"),
 }
+
+# What travels with an identity export (--export): your settings, minus the ones that describe *this*
+# machine (where it listens, where its files live), which another device would get wrong.
+PORTABLE = ("name", "relay", "bootstrap", "stun", "ui", "max_file_mb", "auto_download_mb")
 
 TEMPLATE = """\
 # Lichen config. Run with:  lichen   (or: lichen --config this-file.yaml)
@@ -69,6 +75,7 @@ relay: {relay}
 # downloads: ~/Downloads/lichen   # where accepted files go
 # max_file_mb: 100           # refuse bigger offers
 # auto_download_mb: 0        # >0: auto-accept files up to this size from your contacts
+# vault_mb: 256              # hubs: MB of encrypted sync data for people's other devices (0 = none)
 """
 
 
@@ -85,8 +92,11 @@ def find_default(cwd: Path | None = None) -> Path | None:
 
 
 def load(path: Path) -> dict:
-    text = path.read_text(encoding="utf-8")
-    if path.suffix.lower() == ".json":
+    return parse(path.read_text(encoding="utf-8"), path.suffix.lower() == ".json", str(path))
+
+
+def parse(text: str, is_json: bool = False, where: str = "config") -> dict:
+    if is_json:
         data = json.loads(text)
     else:
         try:
@@ -95,8 +105,8 @@ def load(path: Path) -> dict:
             raise ConfigError("reading YAML configs needs PyYAML: pip install pyyaml (or use a .json config)") from e
         data = yaml.safe_load(text) or {}
     if not isinstance(data, dict):
-        raise ConfigError(f"{path}: expected a mapping of option: value")
-    return validate(data, str(path))
+        raise ConfigError(f"{where}: expected a mapping of option: value")
+    return validate(data, where)
 
 
 def validate(data: dict, where: str = "config") -> dict:
@@ -120,6 +130,21 @@ def validate(data: dict, where: str = "config") -> dict:
             value = str(value)
         out[key] = value
     return out
+
+
+def render(settings: dict, header: str = "") -> str:
+    """A lichen.yaml for the portable options in settings (JSON scalars and flow lists are valid YAML,
+    so this needs no YAML library). Options that describe this machine are left out."""
+    lines = [header.rstrip() + "\n\n"] if header else []
+    for key in PORTABLE:
+        value = settings.get(key)
+        if value is None or value == []:
+            continue
+        if key in ("relay", "bootstrap", "stun") and isinstance(value, list):
+            lines.append(f"{key}:\n" + "".join(f"  - {json.dumps(v)}\n" for v in value))
+        else:
+            lines.append(f"{key}: {json.dumps(value) if isinstance(value, str) else value}\n")
+    return "".join(lines)
 
 
 def write_template(path: Path, name: str = "yourname", relay: str = "chat.example.com:9000") -> None:

@@ -67,6 +67,7 @@ class FileStore:
         # file_id -> {from, name, size, sha256, key, group, ts, status, saved, error}
         #   status: pending | downloading | done | declined | failed | refused
         self.incoming: dict[str, dict] = {}
+        self.on_change = None  # called after offers change (device sync hooks in here)
         if self.path and self.path.exists():
             data = json.loads(self.path.read_text(encoding="utf-8"))
             self.outgoing, self.incoming = data.get("outgoing", {}), data.get("incoming", {})
@@ -107,8 +108,10 @@ class FileStore:
     def add_offer(self, file_id: str, offer: dict) -> bool:
         if file_id in self.incoming:
             return False
+        offer.setdefault("status_ts", time.time())
         self.incoming[file_id] = offer
         self.save()
+        self._changed()
         return True
 
     def part_path(self, file_id: str) -> Path:
@@ -152,8 +155,51 @@ class FileStore:
         return dest
 
     def set_status(self, file_id: str, status: str, **extra) -> None:
-        self.incoming[file_id].update(status=status, **extra)
+        self.incoming[file_id].update(status=status, status_ts=time.time(), **extra)
         self.save()
+        if status != "downloading":  # progress isn't worth telling our other devices about
+            self._changed()
+
+    def _changed(self) -> None:
+        if self.on_change:
+            self.on_change()
+
+    # --- syncing between your own devices ---------------------------------------------------------
+
+    def device_state(self) -> dict:
+        """Offers made to us. What was downloaded where stays on each device (every device downloads its
+        own copy), so a download elsewhere counts as still waiting here; a decline travels."""
+        out = {}
+        for fid, o in sorted(self.incoming.items()):
+            status = o.get("status")
+            keep = {k: v for k, v in o.items() if k not in ("saved", "error", "status", "status_ts")}
+            out[fid] = {**keep, "status": "declined" if status == "declined" else "pending",
+                        "status_ts": o.get("status_ts", 0)}
+        return {"incoming": out}
+
+    def merge_device_state(self, state: dict) -> int:
+        """Learn about offers our other devices received, and about ones they declined."""
+        n = 0
+        for fid, o in ((state or {}).get("incoming") or {}).items():
+            try:
+                offer = {"from": str(o["from"]), "name": str(o["name"]), "size": int(o["size"]),
+                         "sha256": str(o["sha256"]), "key": str(o["key"]), "group": o.get("group"),
+                         "ts": float(o["ts"]), "status": str(o.get("status", "pending")),
+                         "status_ts": float(o.get("status_ts", 0))}
+            except (KeyError, TypeError, ValueError):
+                continue
+            mine = self.incoming.get(fid)
+            if mine is None:
+                self.incoming[fid] = offer
+                n += 1
+            elif (offer["status"] == "declined" and mine.get("status") in ("pending", "failed")
+                  and offer["status_ts"] > mine.get("status_ts", 0)):
+                mine.update(status="declined", status_ts=offer["status_ts"])
+                self.part_path(fid).unlink(missing_ok=True)
+                n += 1
+        if n:
+            self.save()
+        return n
 
     def find_incoming(self, query: str, statuses=("pending", "failed")) -> list[tuple[str, dict]]:
         q = query.lower()

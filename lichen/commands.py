@@ -55,7 +55,7 @@ COMMANDS = [
     Spec("/peers", "", "everyone in your phonebook, with trust and how you'd reach them"),
     Spec("/join", "ADDRESS", "fetch a node's / hub's phonebook (HOST:PORT or ws(s)://...)", ("text",)),
     Spec("/whoami", "", "your key, addresses and relay status"),
-    Spec("/sync", "", "pull missed group messages from other members"),
+    Spec("/sync", "", "catch up: your other devices, group messages, chats, anything waiting to be sent"),
     Spec("/move", "PORT [HOST]", "change your address and tell everyone", ("text", "text")),
     Spec("/help", "", "show this list"),
     Spec("/quit", "", "exit"),
@@ -529,6 +529,9 @@ class Commands:
                 for item in items[-n:]:
                     out(self.format_item(item, items))
         elif cmd == "/sync":
+            devices = await node.sync_devices() + await node.sync_vault()
+            if devices:
+                out(f"  compared notes with your other devices ({devices} answer(s) / snapshot(s))")
             out(f"  {await node.sync_all()} new group message(s), {await node.sync_dms()} new direct message(s)")
             sent = await node.flush_outbox()
             if sent:

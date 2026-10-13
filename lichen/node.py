@@ -31,20 +31,28 @@ outbox (outbox.py) and go out when the recipient is back:
   owed         {from: {sender: [item ids]}}             hub -> recipient: who has something for you
 Every direct message has an id, so retries, IOUs held by several hubs and chat syncs never duplicate.
 
+Your own devices (see devices.py, and "syncing your own devices" below):
+  device_sync  {to, sealed}       -> {sealed}           compare notes with another device of yours: a probe
+                                                        (digest only), then the full state if they differ
+  vault_put    {req, sig, blob}   -> {ok}               leave an encrypted snapshot of your state on a hub
+  vault_get    {req, sig}         -> {snaps}            collect what your other devices left there (vault.py)
+
 Trust (see trust.py): blocked keys are ignored entirely; offers and invites from anyone wait for you
 to accept them; small files from trusted contacts can optionally download by themselves.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import socket
 import time
+import zlib
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from .crypto import EncKey, open_sealed, seal
-from .devices import device_id
+from .devices import device_id, is_linked, mark_linked
 from .dms import DmStore, legacy_id
 from .files import DEFAULT_MAX_MB, FileStore, human_size
 from .groups import HISTORY_MODES, GroupRecord, GroupStore, transfer_body
@@ -55,6 +63,7 @@ from .records import Record
 from .relay import RelayClient, RelayHub
 from .trust import TrustStore
 from .udp import DEFAULT_STUN, Addr, UdpEndpoint
+from .vault import DEFAULT_MB as VAULT_DEFAULT_MB, Vault
 from .wire import is_url, request, serve, split_addr
 
 OnMessage = Callable[[Record | None, str, dict], None]
@@ -74,11 +83,22 @@ TYPING_SHOWN = 6.0  # how long "typing…" stays up after a signal
 RELAY_PREFIX = "relay:"
 KEEPALIVE = 15.0  # seconds between public-address checks and pings to direct peers (keeps NAT mappings open)
 PUNCH_RETRY = 60.0  # after a failed punch, use the relay for this long before trying again
+SYNC_BUDGET = 2_300_000  # bytes of compressed state per device-sync message (the wire allows 4 MiB lines)
+SYNC_TIMEOUT = 30.0  # a device sync can carry a lot of chat history
+STATE_MAX = 256 * 1024 * 1024  # most a snapshot may inflate to
+VAULT_DELAY = 5.0  # after a change, wait this long (batching) before leaving a snapshot on our hubs
+VAULT_MIN_GAP = 15.0  # at most one snapshot upload per hub this often
+KEEP_STEPS = (None, 2000, 500, 200, 100, 50)  # messages kept per chat when the whole history is too big
 
 
 def _clean(msg: dict) -> dict:
     """_udp_src is set by the UDP layer from the packet's real source; never accept it from a peer."""
     return {k: v for k, v in msg.items() if k != "_udp_src"}
+
+
+class Packed(NamedTuple):
+    z: bytes  # compressed state
+    digest: str  # hash of the state that matters for deciding two devices are in step (not the phonebook)
 
 
 class Node:
@@ -99,6 +119,8 @@ class Node:
         stun: list[str] | None = None,
         udp_bind: str | None = None,
         hub: RelayHub | None = None,
+        vault: Vault | None = None,
+        data_dir: Path | None = None,
         dms: DmStore | None = None,
         outbox: Outbox | None = None,
         device: str = "default",
@@ -131,6 +153,16 @@ class Node:
         self.device = device  # this device's id; several devices can share one identity (devices.py)
         self.device_addrs: list[str] = []  # addresses our other devices advertise, adopted into our record
         self.hub.nudge = self._nudge
+        self.vault = vault or Vault(None, VAULT_DEFAULT_MB if direct else 0)
+        self.data_dir = data_dir
+        self.linked = bool(data_dir and is_linked(data_dir))  # this identity is on more than one device
+        self._merging = False  # a device-sync merge is in progress: its changes aren't news to our other devices
+        self._vault_seen = self._load_sync_state()  # device -> newest snapshot of theirs we've merged
+        self._vault_pushed: dict[str, str] = {}  # hub -> digest of what we last left there
+        self._vault_at: dict[str, float] = {}
+        self._vault_pending = False
+        self._vault_dirty = False  # something changed since the last snapshot we left
+        self._rev = 0
         self.trust = trust or TrustStore()
         self.files = files or FileStore(None)
         self.max_file_mb = max_file_mb  # refuse offers bigger than this
@@ -158,7 +190,9 @@ class Node:
         self._typing_sent: dict[str, float] = {}
         self._read_sent: dict[str, float] = {}
         self._devsync_pending = False
+        self._device_round_busy = False
         self.groups.on_change = self.trust.on_change = self._state_changed
+        self.dms.on_change = self.outbox.on_change = self.files.on_change = self._state_changed
 
     @classmethod
     def from_dir(cls, data_dir: Path, name: str, downloads: Path | None = None, passphrase: str | None = None,
@@ -166,8 +200,12 @@ class Node:
         ident = Identity.load_or_create(data_dir / "key", passphrase)
         enc = EncKey.load_or_create(data_dir / "enckey", passphrase)
         hub = RelayHub(data_dir / "mailbox.json", log=kw.get("log", lambda s: None))
+        vault_mb = kw.pop("vault_mb", None)  # a node that accepts connections holds snapshots unless told not to
+        if vault_mb is None:
+            vault_mb = VAULT_DEFAULT_MB if kw.get("direct", True) else 0
         return cls(name, ident, enc, Phonebook(data_dir / "phonebook.json"),
                    GroupStore(ident, enc, data_dir / "groups.json"), hub=hub,
+                   vault=Vault(data_dir / "vault.json", vault_mb), data_dir=data_dir,
                    dms=DmStore(data_dir / "dms.json"), outbox=Outbox(data_dir / "outbox.json"),
                    device=device_id(data_dir),
                    trust=TrustStore(data_dir / "trust.json"),
@@ -225,13 +263,17 @@ class Node:
             await self.join(addr)
         # Our address may differ from last run; tell everyone we already know about.
         await self.announce()
-        # Catch up: group messages, gaps in chats, and anything we owe people who are online now.
+        # Catch up: first with our own other devices (live, then what they left on our hubs), then group
+        # messages, gaps in chats, and anything we owe people who are online now.
         await self.sync_devices()
+        await self.sync_vault()
         await self.sync_all()
         await self.sync_dms()
         await self.flush_outbox()
 
     async def stop(self) -> None:
+        if self._vault_dirty and self.linked:  # don't take unsent news to the grave: leave it for our other devices
+            await self._vault_push(self._sync_hubs(), force=True)
         if self._keepalive_task:
             self._keepalive_task.cancel()
         self.udp.close()
@@ -341,10 +383,18 @@ class Node:
             await asyncio.gather(*(self.udp.keepalive(pk) for pk in list(self.udp.paths)))
             if tick % OUTBOX_EVERY == 0 and self.outbox.items:
                 await self.flush_outbox()
-            if tick % OUTBOX_EVERY == 0 and self.relays:
-                await self.sync_devices()
+            if tick % OUTBOX_EVERY == 0 and (self.relays or self.device_addrs) and not self._device_round_busy:
+                self._spawn(self._device_round())  # can take a while; don't hold up the keepalive
             if tick % PRESENCE_EVERY == 0:
                 await self._presence_round()
+
+    async def _device_round(self) -> None:
+        self._device_round_busy = True
+        try:
+            await self.sync_devices()
+            await self.sync_vault()
+        finally:
+            self._device_round_busy = False
 
     async def _try_direct(self, pubkey: str, hub: str) -> None:
         """Send pubkey a punch request through their relay (it carries our addresses, the reply carries
@@ -628,51 +678,160 @@ class Node:
         return sum(await asyncio.gather(*(self.sync_dm(pk) for pk in peers)))
 
     # --- syncing your own devices ------------------------------------------------------------------
-    # Your devices share a key but each keeps its own state. They swap groups (records, keys, your
-    # membership status, recent messages) and trust/nicknames/verifications, sealed to your own key;
-    # whichever changed something last wins. Chats don't need this: they sync from the other person.
+    # Your devices share a key but each keeps its own state, and each can be off when another is on.
+    # So they keep each other up to date two ways, both with the same snapshot of everything that's
+    # yours (trust, nicknames, groups with their keys and messages, chats, receipts, what's waiting in
+    # the outbox, file offers, phonebook), signed by your key and sealed to your own:
+    #   * live: devices that are on at the same time compare digests (a probe) and, if they differ,
+    #     swap snapshots, through your hubs or directly. At startup, when another device appears, soon
+    #     after a change, and every minute.
+    #   * through the vault: whenever your state changes, a snapshot is left on your hubs (vault.py).
+    #     A device that was off picks up everything its siblings left there when it starts.
+    # Merging only ever adds: newest change wins per contact / group status, messages and outbox items
+    # are unioned, so devices converge whatever order they hear things in. History too big for one
+    # message is cut to the newest messages; the rest still comes from chat and group sync.
+
+    def _state(self, keep: int | None = None) -> dict:
+        me = self.ident.pubkey
+        return {"trust": self.trust.device_state(), "groups": self.groups.device_state(keep),
+                "dms": self.dms.device_state(keep), "outbox": self.outbox.device_state(),
+                "files": self.files.device_state(),
+                "phonebook": [r.to_dict() for r in sorted(self.phonebook.all(), key=lambda r: r.pubkey)
+                              if r.pubkey != me]}
 
     def device_state(self) -> dict:
-        return {"groups": self.groups.device_state(), "trust": self.trust.device_state()}
+        return self._state()
 
-    def _signed_state(self) -> dict:
-        inner = {"from": self.ident.pubkey, "to": self.ident.pubkey, "ts": time.time(), "device": self.device,
-                 "state": self.device_state()}
-        inner["sig"] = self.ident.sign(canonical(inner))
-        return inner
+    def _pack(self) -> Packed:
+        """Our state, compressed to fit one message (older messages are left out if it must be)."""
+        for keep in KEEP_STEPS:
+            state = self._state(keep)
+            z = zlib.compress(canonical(state), 6)
+            if len(z) <= SYNC_BUDGET or keep == KEEP_STEPS[-1]:
+                break
+        core = {k: v for k, v in state.items() if k != "phonebook"}  # gossip keeps phonebooks close enough
+        return Packed(z, hashlib.sha256(canonical(core)).hexdigest())
+
+    def _seal_snapshot(self, packed: Packed, full: bool = True, rev: int = 0) -> dict:
+        """A signed envelope sealed to our own key: our device id and digest, plus (if full) the state."""
+        z = packed.z if full else b""
+        head = {"from": self.ident.pubkey, "to": self.ident.pubkey, "device": self.device, "rev": rev,
+                "ts": time.time(), "digest": packed.digest, "zhash": hashlib.sha256(z).hexdigest()}
+        head["sig"] = self.ident.sign(canonical(head))
+        return seal(self.enc.pub, json.dumps(head).encode() + b"\n" + z)
+
+    def _open_snapshot(self, box) -> tuple[dict, dict | None] | None:
+        """(header, state) of a snapshot sealed to us and signed by us; state is None for a probe."""
+        plain = open_sealed(self.enc, box) if isinstance(box, dict) else None
+        if not plain:
+            return None
+        try:
+            line, _, z = plain.partition(b"\n")
+            head = json.loads(line)
+            sig = head.pop("sig")
+            me = self.ident.pubkey
+            if (head["from"] != me or head["to"] != me or not verify(me, canonical(head), sig)
+                    or hashlib.sha256(z).hexdigest() != head["zhash"]):
+                return None
+            if not z:
+                return head, None
+            inflater = zlib.decompressobj()
+            state = json.loads(inflater.decompress(z, STATE_MAX))
+            return (head, state) if isinstance(state, dict) and not inflater.unconsumed_tail else None
+        except (ValueError, KeyError, TypeError, AttributeError, zlib.error):
+            return None
+
+    def _link(self) -> None:
+        """We've met another device of ours: from now on keep a snapshot on our hubs."""
+        if not self.linked:
+            self.linked = True
+            if self.data_dir:
+                mark_linked(self.data_dir)
+            self.log("another device of yours is around; your devices will now keep each other in step")
+            self._vault_soon()
 
     def _merge_device_state(self, state: dict, device) -> None:
-        groups = self.groups.merge_device_state(state.get("groups") or {})
-        people = self.trust.merge_device_state(state.get("trust") or {})
-        if groups or people:
+        me = self.ident.pubkey
+        self._merging = True
+        try:
+            groups = self.groups.merge_device_state(state.get("groups") or {})
+            people = self.trust.merge_device_state(state.get("trust") or {})
+            messages = self.dms.merge_device_state(state.get("dms") or {}, me)
+            queued = self.outbox.merge_device_state(state.get("outbox") or {})
+            offers = self.files.merge_device_state(state.get("files") or {})
+            records = self.phonebook.merge_all(Record.from_dict(d) for d in state.get("phonebook") or []
+                                               if isinstance(d, dict) and d.get("pubkey") != me)
+        finally:
+            self._merging = False
+        if groups or people or messages or queued or offers:
             names = ", ".join("#" + self.groups.get(g).name for g in groups if self.groups.get(g))
-            self.log(f"synced from your device {device}: {len(groups)} group(s){' (' + names + ')' if names else ''}, "
-                     f"{people} contact setting(s)")
-            self._emit("devices_synced", groups=groups, people=people)
+            parts = [f"{len(groups)} group(s)" + (f" ({names})" if names else ""), f"{messages} message(s)",
+                     f"{people} contact setting(s)"]
+            if queued:
+                parts.append(f"{queued} unsent item(s)")
+            if offers:
+                parts.append(f"{offers} file offer(s)")
+            self.log(f"synced from your device {device}: {', '.join(parts)}")
+            self._emit("devices_synced", groups=groups, people=people, messages=messages)
+        if records and not (groups or people or messages or queued or offers):
+            self.log(f"synced from your device {device}: {records} contact record(s)")
+
+    def _sync_hubs(self) -> list[str]:
+        """The hubs our devices can meet at: every relay we or a sibling of ours attach to (not ourselves)."""
+        return [a[len(RELAY_PREFIX):] for a in self.addrs if a.startswith(RELAY_PREFIX) and a[len(RELAY_PREFIX):] != self.addr]
+
+    def _sibling_addrs(self) -> list[str]:
+        return [a for a in self.device_addrs if not a.startswith(RELAY_PREFIX) and a != self.addr]
+
+    async def _ask_devices(self, target: str, msg: dict, device: str | None = None) -> list[dict]:
+        """Send msg to our other devices through hub `target` (all of them, or just `device`), or straight
+        to `target` if it's a sibling's own address. Returns every reply."""
+        if target in self._sibling_addrs():
+            reply = await request(target, msg, SYNC_TIMEOUT)
+            return [reply] if reply else []
+        fwd = {"type": "forward", "to": self.ident.pubkey, "msg": msg, "except_device": self.device, "fanout": True}
+        if device:
+            fwd["only_device"] = device
+        reply = await request(target, fwd, SYNC_TIMEOUT)
+        if not reply:
+            return []
+        return [r for r in reply["replies"] if isinstance(r, dict)] if isinstance(reply.get("replies"), list) else [reply]
 
     async def sync_devices(self) -> int:
-        """Swap state with our other devices through each of our hubs. Returns how many answered."""
-        sealed = seal(self.enc.pub, canonical(self._signed_state()))
-        msg = {"type": "device_sync", "to": self.ident.pubkey, "sealed": sealed}
-        requests = [request(a[len(RELAY_PREFIX):], {"type": "forward", "to": self.ident.pubkey, "msg": msg,
-                                                     "except_device": self.device})
-                    for a in self.addrs if a.startswith(RELAY_PREFIX) and a[len(RELAY_PREFIX):] != self.addr]
-        requests += [request(a, msg) for a in self.device_addrs if not a.startswith(RELAY_PREFIX) and a != self.addr]
-        answered = 0
-        for reply in await asyncio.gather(*requests):
-            plain = open_sealed(self.enc, reply.get("sealed") or {}) if reply and reply.get("ok") else None
-            if not plain:
-                continue
-            inner = json.loads(plain)
-            body = {k: v for k, v in inner.items() if k != "sig"}
-            if inner.get("from") == self.ident.pubkey and verify(self.ident.pubkey, canonical(body), inner.get("sig", "")):
-                self._merge_device_state(inner.get("state") or {}, inner.get("device"))
-                answered += 1
-        return answered
+        """Compare notes with our other devices that are on right now, through each of our hubs (or
+        directly): a cheap probe first, and a full swap of state with whoever differs from us. Returns
+        how many devices answered."""
+        packed = self._pack()
+        probe = {"type": "device_sync", "to": self.ident.pubkey, "sealed": self._seal_snapshot(packed, full=False)}
+        targets = [*self._sync_hubs(), *self._sibling_addrs()]
+        answers = await asyncio.gather(*(self._ask_devices(t, probe) for t in targets))
+        seen: set[str] = set()
+        differ: list[tuple[str, str]] = []  # (where to reach them, device id)
+        for target, replies in zip(targets, answers):
+            for reply in replies:
+                got = self._open_snapshot(reply.get("sealed")) if reply.get("ok") else None
+                if not got or got[0]["device"] == self.device or got[0]["device"] in seen:
+                    continue
+                seen.add(got[0]["device"])
+                self._link()
+                if got[0]["digest"] != packed.digest:
+                    differ.append((target, got[0]["device"]))
+        if differ:
+            full = {"type": "device_sync", "to": self.ident.pubkey, "sealed": self._seal_snapshot(packed)}
+            for replies in await asyncio.gather(*(self._ask_devices(t, full, d) for t, d in differ)):
+                for reply in replies:
+                    got = self._open_snapshot(reply.get("sealed")) if reply.get("ok") else None
+                    if got and got[1] is not None and got[0]["device"] != self.device:
+                        self._merge_device_state(got[1], got[0]["device"])
+        return len(seen)
 
     def _state_changed(self) -> None:
-        """Something worth telling our other devices changed: sync shortly (batched)."""
-        if self._devsync_pending or not self.relays:
+        """Something worth telling our other devices changed: sync shortly (batched), and leave a
+        snapshot on our hubs for the ones that are off."""
+        if self._merging:
+            return  # that's news from a sibling, who has told the others itself
+        self._vault_soon()
+        if self._devsync_pending or not (self.relays or self.device_addrs):
             return
         self._devsync_pending = True
 
@@ -685,6 +844,99 @@ class Node:
             self._spawn(later())
         except RuntimeError:  # no event loop yet (changes made before start)
             self._devsync_pending = False
+
+    # --- the vault: syncing with devices that are off ----------------------------------------------
+
+    def _sync_state_path(self) -> Path | None:
+        return self.data_dir / "devsync.json" if self.data_dir else None
+
+    def _load_sync_state(self) -> dict[str, int]:
+        path = self._sync_state_path()
+        try:
+            return {str(d): int(r) for d, r in json.loads(path.read_text(encoding="utf-8")).get("seen", {}).items()} \
+                if path and path.exists() else {}
+        except (OSError, ValueError, AttributeError, TypeError):
+            return {}
+
+    def _save_sync_state(self) -> None:
+        if path := self._sync_state_path():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"seen": self._vault_seen}), encoding="utf-8")
+
+    def _signed(self, req: dict) -> dict:
+        return {"req": req, "sig": self.ident.sign(canonical(req))}
+
+    async def sync_vault(self) -> int:
+        """Collect the snapshots our other devices left on our hubs, then leave ours. Returns how many
+        new snapshots we merged. Only identities that live on several devices use this."""
+        hubs = self._sync_hubs()
+        if not self.linked or not hubs:
+            return 0
+        got = await self._vault_pull(hubs)
+        await self._vault_push(hubs)
+        return got
+
+    async def _vault_pull(self, hubs: list[str]) -> int:
+        req = {"pubkey": self.ident.pubkey, "device": self.device, "ts": time.time(), "have": dict(self._vault_seen)}
+        msg = {"type": "vault_get", **self._signed(req)}
+        merged = 0
+        for reply in await asyncio.gather(*(request(h, msg, SYNC_TIMEOUT) for h in hubs)):
+            for snap in (reply.get("snaps") or []) if reply and reply.get("ok") else []:
+                try:
+                    device, rev = str(snap["device"]), int(snap["rev"])
+                    if device == self.device or rev <= self._vault_seen.get(device, 0):
+                        continue
+                    got = self._open_snapshot(json.loads(snap["blob"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if not got or got[1] is None or got[0]["device"] != device:
+                    continue  # not from us (a hub made it up, or it's damaged): ignore it
+                self._link()
+                self._merge_device_state(got[1], device)
+                self._vault_seen[device] = rev
+                merged += 1
+        if merged:
+            self._save_sync_state()
+        return merged
+
+    async def _vault_push(self, hubs: list[str], force: bool = False) -> None:
+        packed = self._pack()
+        self._vault_dirty = False  # (a change made while we upload sets it again)
+        todo = [h for h in hubs if self._vault_pushed.get(h) != packed.digest
+                and (force or time.time() - self._vault_at.get(h, 0) >= VAULT_MIN_GAP)]
+        if not todo:
+            return
+        self._rev = max(time.time_ns() // 1000, self._rev + 1)
+        blob = json.dumps(self._seal_snapshot(packed, rev=self._rev))
+        req = {"pubkey": self.ident.pubkey, "device": self.device, "rev": self._rev, "ts": time.time(),
+               "hash": hashlib.sha256(blob.encode()).hexdigest()}
+        msg = {"type": "vault_put", **self._signed(req), "blob": blob}
+        for hub in todo:
+            self._vault_at[hub] = time.time()
+        for hub, reply in zip(todo, await asyncio.gather(*(request(h, msg, SYNC_TIMEOUT) for h in todo))):
+            if reply and reply.get("ok"):
+                self._vault_pushed[hub] = packed.digest
+            elif reply:
+                self.log(f"hub {hub} won't keep a snapshot for your other devices: {reply.get('error')}")
+
+    def _vault_soon(self) -> None:
+        """Leave a fresh snapshot on our hubs shortly (batched), if we have other devices to leave it for."""
+        if not self.linked or not self._sync_hubs():
+            return
+        self._vault_dirty = True
+        if self._vault_pending:
+            return
+        self._vault_pending = True
+
+        async def later():
+            await asyncio.sleep(VAULT_DELAY)
+            self._vault_pending = False
+            await self._vault_push(self._sync_hubs())
+
+        try:
+            self._spawn(later())
+        except RuntimeError:
+            self._vault_pending = False
 
     def _adopt_device_addrs(self, rec: Record) -> None:
         """Another device of ours published our record: keep its addresses in ours too, so people can
@@ -1016,16 +1268,28 @@ class Node:
             if to == self.ident.pubkey:
                 return await self.handle(_clean(inner))
             sender, item, skip = msg.get("from"), msg.get("item"), msg.get("except_device")
+            only = msg.get("only_device")
             return await self.hub.forward(to, _clean(inner), str(sender) if sender else None,
-                                          str(item) if item else None, str(skip) if skip else None)
+                                          str(item) if item else None, str(skip) if skip else None,
+                                          str(only) if only else None, bool(msg.get("fanout")))
 
         if kind == "device_sync":
-            inner = self._open_sealed(msg)
-            if not inner or inner["from"] != self.ident.pubkey or inner.get("device") == self.device:
+            got = self._open_snapshot(msg.get("sealed"))
+            if not got or got[0]["device"] == self.device:
                 return {"ok": False, "error": "not allowed"}
-            self._merge_device_state(inner.get("state") or {}, inner.get("device"))
-            mine = self._signed_state()
-            return {"ok": True, "sealed": seal(self.enc.pub, canonical(mine))}
+            head, state = got
+            self._link()
+            if state is None:  # a probe: just say where we stand
+                return {"ok": True, "sealed": self._seal_snapshot(self._pack(), full=False)}
+            self._merge_device_state(state, head["device"])
+            return {"ok": True, "sealed": self._seal_snapshot(self._pack())}
+
+        if kind == "vault_put":
+            pubkey = str((msg.get("req") or {}).get("pubkey"))
+            return self.vault.put(msg, known=pubkey in self.hub.attached or self.phonebook.get(pubkey) is not None)
+
+        if kind == "vault_get":
+            return self.vault.get(msg)
 
         if kind == "nudge":
             peer = str(msg.get("peer"))

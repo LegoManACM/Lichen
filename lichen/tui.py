@@ -637,6 +637,9 @@ class ChatApp(App):
         elif kind == "presence":
             self.refresh_sidebar()
             return
+        elif kind == "devices_synced":
+            if self.current and self.current[0] in ("dm", "group"):
+                self._redraw()  # messages from your other devices may belong to the chat on screen
         elif kind == "owed":
             self.to_console(f"[dim]{escape(self._who(d['sender']))} has {d['count']} thing(s) for you; "
                             f"they'll arrive when {escape(self._who(d['sender']))} is online[/]")

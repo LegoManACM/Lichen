@@ -101,6 +101,7 @@ Flags on the command line override the file. Options (same names as the flags):
 | `downloads` | where accepted files are saved (default `data/<name>/downloads`) |
 | `max_file_mb` | refuse file offers bigger than this (default 100) |
 | `auto_download_mb` | auto-accept files up to this size from your contacts (default 0 = always ask) |
+| `vault_mb`  | hubs: MB of encrypted sync data for people's *other devices* to hold (default 256; `0` = hold none, see [Using Lichen on more than one device](#using-lichen-on-more-than-one-device)) |
 
 Ready-made examples are in [examples/](examples): `friend.yaml`, `hub-open-port.yaml`,
 `hub-cloudflare.yaml`, `local-test.json`.
@@ -114,6 +115,7 @@ forged records):
 
 ```powershell
 python demo.py
+python demo_sync.py     # one identity on two devices that are never on together (the hub's vault)
 ```
 
 Interactive on one PC, one terminal each:
@@ -239,7 +241,9 @@ message: see the next section.
 
 ## Offline delivery (IOUs)
 
-Hubs store as little as possible: **no messages, not even encrypted ones**, just IOUs.
+Hubs store as little as possible: **no messages, not even encrypted ones**, just IOUs. (The one
+exception is the opt-out [device vault](#when-the-devices-arent-on-at-the-same-time): an encrypted
+snapshot of *your own* state, for your own other devices, never anyone else's messages.)
 
 1. You send something to someone who's offline (a message, a file offer, a group invite, a leave
    request). Their hub replies "they're away" and records an IOU: *you owe them item `<id>`*, plus a
@@ -259,7 +263,8 @@ sends what the other is missing (sealed, and checked against each author's signa
 themselves.
 
 The trade-off: delivery needs you and the recipient online at the same time at some point; the hub
-can't hand over anything on your behalf. Group chat already catches up from any member who's online,
+can't hand over anything on your behalf. (If you use several devices, any of them can be the one that's
+online: they share the outbox.) Group chat already catches up from any member who's online,
 so groups don't need IOUs.
 
 ## Replies, reactions, edits and deletes
@@ -295,29 +300,59 @@ are for direct messages only (in groups they'd be noise).
 
 ```powershell
 lichen --export me.lichen      # on the device you already use (asks for a passphrase for the file)
-lichen --import me.lichen      # on the new device, then run lichen as usual
+lichen --import me.lichen      # on the new device: no config or --name needed; then just run lichen
 ```
 
 The export holds your keys, contacts (with nicknames and verifications), groups (with their keys and
-history), chats and phonebook, encrypted with the passphrase you choose. **Anyone with the file and
-its passphrase can be you**, so treat it like a password and delete it once you've imported it.
+history), chats, unsent messages and phonebook, **and a `lichen.yaml`** with your portable settings
+(name, hubs, STUN servers, file limits), encrypted with the passphrase you choose. Settings that
+describe one machine (`data`, `downloads`, `host`, `bind`, `port`, `url`) are left out. Importing
+writes that `lichen.yaml` into the current folder (it never overwrites one that's there: you get
+`lichen.from-export.yaml` instead) and sets up `data/<name>`. **Anyone with the file and its
+passphrase can be you**, so treat it like a password and delete it once you've imported it.
 
 After that both devices are you, at once:
 
 - Each device attaches to your hubs with its own device id, and hubs deliver to **all** of them.
 - If your devices use different hubs, they notice each other in the phonebook and advertise the
   combined addresses, so people can reach whichever one is up.
-- Anything a device misses (it was off, or a message went over a direct path to the other one) is
-  filled in by chat and group sync from the people you talk to, including messages you sent from
-  the other device. A new device also syncs with all your contacts on first start.
+- **Everything syncs between your devices**: contacts, blocks, nicknames and verifications; groups
+  (including solo groups, joins, leaves, deletes, keys and every message); all your chats with
+  their delivered / read ticks; messages still waiting in the outbox (so whichever device is on
+  when the recipient returns delivers them, and the other one drops its copy); file offers (a
+  decline travels, downloads stay per device); and the phonebook. Whichever device changed
+  something last wins; messages and unsent items are merged, so nothing is lost and the order
+  doesn't matter.
 
-- Your devices also **sync with each other** (sealed to your own key, through your hubs): groups
-  (including solo groups, joins, leaves and deletes, with recent messages), contacts, blocks, nicknames
-  and verifications. Whichever device changed something last wins. This happens at startup, when one
-  device sees another come online, a moment after you change something, and every minute; a device
-  that was off catches up the next time both are on.
+### When the devices aren't on at the same time
 
-Not synced between devices: files you've downloaded (each device downloads its own copy).
+Two ways, used together:
+
+1. **Live.** Devices that are on at the same time compare a digest of their state through your hubs
+   (or directly) and, if it differs, swap everything. This happens at startup, as soon as another
+   device appears, about a second after a change, and every minute. It costs one tiny message when
+   nothing differs.
+2. **Through your hubs' vault.** Once an identity is on several devices, each device leaves an
+   **encrypted snapshot** of its state on your hubs (a moment after each change, and when it shuts
+   down). When a device starts, it collects the snapshots its siblings left, even if they are off
+   right now, and merges them. So you can change things on your laptop, switch it off, and open your
+   desktop an hour (or a week) later: it picks everything up when it starts, with no overlap needed.
+
+What the vault means for privacy: a snapshot is compressed, **sealed to your own encryption key and
+signed by your identity key**, so the hub sees only that your key keeps a blob of some size, which
+device uploaded it and when. It can't read it, and can't make one up (an unsigned or foreign snapshot
+is ignored). A hub keeps one snapshot per device (a new upload replaces the old one), at most 24 MB
+per identity, only for identities it knows, and forgets a device that hasn't uploaded for 90 days.
+Hub owners can turn it off with `vault_mb: 0`; the live path then still works, and devices on
+other hubs still meet there. Single-device identities never upload anything: the vault only starts
+once you've exported, imported, or a second device has shown up.
+
+If your history is too big for one snapshot (about 2 MB compressed, tens of thousands of messages),
+the oldest messages of each chat are left out of it; they still come from the other person's
+device and from group members, as before.
+
+Not synced between devices: files you've downloaded (each device downloads its own copy), and which
+chat you're looking at / unread counts.
 
 ## Trust, requests and invites
 
@@ -444,6 +479,9 @@ per line, or a WebSocket with one JSON object per text message. Servers accept b
 | `file_get`     | `{file_id, offset}`                      | `{n, ct}` (one encrypted chunk) |
 | `nudge`        | `{peer}` (hub -> sender)                 | `{ok}`; sender delivers what it owes `peer` |
 | `owed`         | `{from: {sender: [item ids]}}` (hub -> recipient) | `{ok}` |
+| `device_sync`  | `{to, sealed}`: a digest probe, or your whole state (via `forward` with `fanout`) | `{sealed}` |
+| `vault_put`    | `{req: {pubkey, device, rev, hash, ts}, sig, blob}` | `{ok}` |
+| `vault_get`    | `{req: {pubkey, device, ts, have{}}, sig}` | `{snaps[{device, rev, blob}]}` |
 
 Over UDP, every request above can also travel on a punched path. Datagrams are JSON:
 `ping`/`pong` (signed; pong reports the address it saw), and `req`/`rep` chunks
