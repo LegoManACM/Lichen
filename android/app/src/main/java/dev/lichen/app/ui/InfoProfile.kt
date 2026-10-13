@@ -1,6 +1,9 @@
 package dev.lichen.app.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -111,6 +114,41 @@ fun InfoScreen(client: ChatClient, pubkey: String, onBack: () -> Unit) {
 }
 
 /**
+ * What happens when someone who isn't in your contacts writes: three tiles like the nav (the chosen one
+ * filled accent with a shadow, the others outlined) and a line saying what the choice does.
+ */
+@Composable
+private fun StrangersSection(current: Strangers, onChange: (Strangers) -> Unit) {
+    val p = Slab.colors
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionLabel("WHEN SOMEONE NEW WRITES")
+        Row(Modifier.fillMaxWidth().selectableGroup().padding(end = 3.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            for ((s, label) in listOf(Strangers.REQUESTS to "Requests", Strangers.CHATS to "Chats", Strangers.IGNORE to "Ignore")) {
+                val on = s == current
+                val m = if (on) Modifier.hardShadow(p.shadow, 3.dp).background(p.accent) else Modifier.slabBorder(p.line)
+                Box(
+                    Modifier.weight(1f).then(m).height(48.dp).selectable(on, role = Role.RadioButton) { onChange(s) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label, color = if (on) p.onAccent else p.text, fontSize = 14.sp,
+                        fontWeight = if (on) FontWeight.Bold else FontWeight.SemiBold,
+                    )
+                }
+            }
+        }
+        Text(
+            when (current) {
+                Strangers.REQUESTS -> "People who aren't in your contacts wait in Requests until you accept them."
+                Strangers.CHATS -> "People who aren't in your contacts go straight into your chats. Their files and invites still ask first."
+                Strangers.IGNORE -> "Messages, files and invites from people who aren't in your contacts are dropped. They aren't told."
+            },
+            fontSize = 13.sp, color = p.muted, lineHeight = 18.sp,
+        )
+    }
+}
+
+/**
  * Settings for the active profile: who you are, colors, hubs, sync, and the advanced / destructive bits.
  */
 @Composable
@@ -145,6 +183,8 @@ fun ProfileScreen(
             }
 
             ColorsSection(onAll = onColors)
+
+            StrangersSection(pr.strangers) { s -> scope.launch { client.setStrangers(s) } }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 SectionLabel("YOUR NAME")

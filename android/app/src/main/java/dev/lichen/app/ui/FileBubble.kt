@@ -8,15 +8,19 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import dev.lichen.app.ui.theme.*
 import dev.lichen.core.api.ChatClient
 import dev.lichen.core.api.ChatMessage
 import dev.lichen.core.api.FileTransfer
@@ -29,7 +33,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.io.File
 
-// File offers in the chat (minimal GUI; a designer is redoing the visuals). Offers and messages share one
+// File offers in the chat. Offers and messages share one
 // time-ordered list; downloads, sends and "save to Downloads" run on an app-wide scope so leaving the chat
 // doesn't cancel them.
 
@@ -100,50 +104,101 @@ private fun saveToDownloads(context: Context, file: File, name: String) {
     }
 }
 
+/**
+ * A file in the chat, as the canvas's SlabChat draws it: a card with a square icon tile, the name, a mono
+ * size line and (while downloading) a 6dp progress bar along the bottom. An incoming file that's waiting
+ * for you or coming in is alert-colored; yours have the accent; finished ones are a plain card. The time
+ * and state sit in mono under the card, like a message's.
+ */
 @Composable
 fun FileBubble(files: FilesApi, t: FileTransfer) {
     val context = LocalContext.current
-    val dim = MaterialTheme.colorScheme.onSurfaceVariant
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (t.outgoing) Arrangement.End else Arrangement.Start) {
-        Surface(
-            color = if (t.outgoing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = RoundedCornerShape(18.dp), modifier = Modifier.widthIn(max = 300.dp),
-        ) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Text(t.name, style = MaterialTheme.typography.bodyLarge)
-                Text(humanSize(t.size), style = MaterialTheme.typography.labelSmall, color = dim)
-                val note = when (t.status) {
-                    TransferStatus.OFFERED -> "Offered"
-                    TransferStatus.WAITING -> "Offered; waiting for them to come online"
-                    TransferStatus.PENDING -> "Wants to send you this file"
-                    TransferStatus.DOWNLOADING -> "Downloading... ${(t.progress * 100).toInt()}%"
-                    TransferStatus.DONE -> "Downloaded"
-                    TransferStatus.DECLINED -> "Declined"
-                    TransferStatus.FAILED -> "Download failed${t.error?.let { ": $it" } ?: ""}"
-                    TransferStatus.REFUSED -> t.error ?: "Too big"
+    val p = Slab.colors
+    val error = MaterialTheme.colorScheme.error
+    val live = !t.outgoing && t.status in listOf(TransferStatus.PENDING, TransferStatus.DOWNLOADING, TransferStatus.FAILED)
+    val ground = if (live) p.alertGround else p.card
+    val (border, shadow) = when {
+        live -> p.alert to p.alertShadow
+        t.outgoing -> p.accent to p.shadow
+        else -> p.edge to null
+    }
+    val (tile, onTile) = when {
+        live -> p.alert to p.onAlert
+        t.outgoing -> p.accent to p.onAccent
+        else -> p.edge to p.text
+    }
+    Column(
+        Modifier.fillMaxWidth(), horizontalAlignment = if (t.outgoing) Alignment.End else Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        var card = Modifier.fillMaxWidth(0.78f)
+        if (shadow != null) card = card.hardShadow(shadow)
+        Column(card.background(ground).slabBorder(border)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box(Modifier.size(40.dp).background(tile), contentAlignment = Alignment.Center) {
+                    Icon(if (t.outgoing) SlabIcons.Upload else SlabIcons.Download, null, Modifier.size(20.dp), tint = onTile)
                 }
-                Text(note, style = MaterialTheme.typography.bodySmall, color = if (t.status == TransferStatus.FAILED || t.status == TransferStatus.REFUSED) MaterialTheme.colorScheme.error else dim)
-                if (t.status == TransferStatus.DOWNLOADING) {
-                    LinearProgressIndicator(progress = { t.progress }, Modifier.fillMaxWidth().padding(vertical = 4.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(t.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = p.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    val size = humanSize(t.size)
+                    Text(
+                        if (t.status == TransferStatus.DOWNLOADING) "$size · ${(t.progress * 100).toInt()}%" else size,
+                        fontFamily = Slab.mono, fontSize = 10.sp, color = p.muted,
+                    )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    when (t.status) {
-                        TransferStatus.PENDING, TransferStatus.FAILED -> {
-                            TextButton(onClick = { appScope.launch { files.download(t.id) } }) { Text(if (t.status == TransferStatus.FAILED) "Resume" else "Download") }
-                            TextButton(onClick = { files.decline(t.id) }) { Text("Decline") }
-                        }
-                        TransferStatus.DONE -> {
-                            val f = files.location(t.id)
-                            if (f != null) {
-                                TextButton(onClick = { openFile(context, f) }) { Text("Open") }
-                                TextButton(onClick = { saveToDownloads(context, f, t.name) }) { Text("Save to Downloads") }
-                            }
-                        }
-                        else -> {}
+            }
+            val problem = when (t.status) {
+                TransferStatus.FAILED -> "Download failed${t.error?.let { ": $it" } ?: ""}"
+                TransferStatus.REFUSED -> "Not downloaded: ${t.error ?: "too big"}"
+                else -> null
+            }
+            problem?.let {
+                Text(it, Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp), fontSize = 13.sp, lineHeight = 18.sp, color = error)
+            }
+            val actions: List<Pair<String, () -> Unit>> = when (t.status) {
+                TransferStatus.PENDING, TransferStatus.FAILED -> listOf(
+                    "Decline" to { files.decline(t.id); Unit },
+                    (if (t.status == TransferStatus.FAILED) "Resume" else "Download") to { appScope.launch { files.download(t.id) }; Unit },
+                )
+                TransferStatus.DONE -> files.location(t.id)?.let { f ->
+                    listOf("Save" to { saveToDownloads(context, f, t.name) }, "Open" to { openFile(context, f) })
+                } ?: emptyList()
+                else -> emptyList()
+            }
+            if (actions.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    actions.forEachIndexed { i, (label, act) ->
+                        val primary = i == actions.lastIndex
+                        SlabButton(
+                            label, act, Modifier.weight(1f), if (primary) SlabButtonStyle.Primary else SlabButtonStyle.Secondary,
+                            height = 40.dp, fill = if (live) p.alert else p.accent, onFill = if (live) p.onAlert else p.onAccent,
+                            shadowColor = if (live) p.alertShadow else p.shadow,
+                        )
                     }
                 }
-                Text(clockTime(t.ts), Modifier.align(Alignment.End), style = MaterialTheme.typography.labelSmall, color = dim)
+            }
+            if (t.status == TransferStatus.DOWNLOADING) {
+                Box(Modifier.fillMaxWidth().height(6.dp).background(p.alert.copy(alpha = 0.25f))) {
+                    Box(Modifier.fillMaxWidth(t.progress.coerceIn(0f, 1f)).fillMaxHeight().background(p.alert))
+                }
             }
         }
+        val state = when (t.status) {
+            TransferStatus.OFFERED -> "OFFERED"
+            TransferStatus.WAITING -> "WAITING FOR THEM TO COME ONLINE"
+            TransferStatus.PENDING -> "WANTS TO SEND YOU THIS"
+            TransferStatus.DOWNLOADING -> "DOWNLOADING"
+            TransferStatus.DONE -> if (t.outgoing) "SENT" else "DOWNLOADED"
+            TransferStatus.DECLINED -> "DECLINED"
+            TransferStatus.FAILED -> "FAILED"
+            TransferStatus.REFUSED -> "TOO BIG"
+        }
+        Text("${clockTime(t.ts)} · $state", fontFamily = Slab.mono, fontSize = 10.sp, color = if (live) p.alert else p.muted)
     }
 }

@@ -49,6 +49,12 @@ class TrustStore(private val file: File? = null) {
     fun trusted(pubkey: String): Boolean = get(pubkey) == "trusted"
     fun blocked(pubkey: String): Boolean = get(pubkey) == "blocked"
 
+    /** Drop anything from keys that aren't trusted (Settings → strangers: ignore). Not saved here: settings.json has it. */
+    @Volatile var ignoreStrangers = false
+
+    /** Drop what [pubkey] sends us: blocked, or a stranger while we ignore strangers. */
+    fun dropped(pubkey: String): Boolean = get(pubkey).let { it == "blocked" || (ignoreStrangers && it != "trusted") }
+
     fun nickname(pubkey: String): String? = synchronized(lock) { nicknames[pubkey] }
 
     /** All nicknames we've given, key -> nickname. */

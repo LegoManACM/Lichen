@@ -47,7 +47,7 @@ class FakeSetup : LichenSetup {
     )
 }
 
-class FakeChatClient(private val settings: Settings, private val profileId: String = "", private val variant: Int = 0) : ChatClient {
+class FakeChatClient(private var settings: Settings, private val profileId: String = "", private val variant: Int = 0) : ChatClient {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val me = "meKEY${variant}000000000000000000000000000000000000"
 
@@ -66,7 +66,7 @@ class FakeChatClient(private val settings: Settings, private val profileId: Stri
     private val carol = key(names[2])
     private val mal = key(names[4])
 
-    private val everyone = listOf(
+    private val everyone = mutableListOf(
         Person(alice, names[0], Trust.TRUSTED, true),
         Person(bob, names[1], Trust.TRUSTED, false),
         Person(carol, names[2], Trust.TRUSTED, false, "${names[2]} (work)"),
@@ -74,7 +74,7 @@ class FakeChatClient(private val settings: Settings, private val profileId: Stri
         Person(mal, names[4], Trust.UNKNOWN, false),
         Person(key(names[5]), names[5], Trust.BLOCKED, false),
     )
-    private fun person(pk: String) = everyone.first { it.pubkey == pk }
+    private fun person(pk: String) = everyone.firstOrNull { it.pubkey == pk } ?: Person(pk, pk.take(8), Trust.UNKNOWN, false).also { everyone += it }
 
     private val msgs = HashMap<String, MutableStateFlow<List<ChatMessage>>>()
     private val unread = HashMap<String, Int>()
@@ -126,12 +126,13 @@ class FakeChatClient(private val settings: Settings, private val profileId: Stri
 
     @Synchronized
     private fun refresh() {
-        profile.value = Profile(me, settings.name, settings.hubs, "meKE Y000 0000 0000", "d3v1c3-fake")
+        profile.value = Profile(me, settings.name, settings.hubs, "meKE Y000 0000 0000", "d3v1c3-fake", settings.strangers)
         contacts.value = everyone.filter { it.trust != Trust.BLOCKED }
+            .filter { it.trust == Trust.TRUSTED || settings.strangers != Strangers.IGNORE }
             .map { contactOf(it) }
-            .filter { it.lastMessage != null }
+            .filter { it.lastMessage != null || it.trust == Trust.TRUSTED }
             .sortedByDescending { it.lastMessage?.ts ?: 0.0 }
-        requests.value = contacts.value.filter { it.trust == Trust.UNKNOWN }
+        requests.value = if (settings.strangers == Strangers.REQUESTS) contacts.value.filter { it.trust == Trust.UNKNOWN } else emptyList()
         people.value = everyone.map { contactOf(it) }.sortedBy { it.displayName.lowercase() }
     }
 
@@ -193,6 +194,8 @@ class FakeChatClient(private val settings: Settings, private val profileId: Stri
     override suspend fun setNickname(pubkey: String, nickname: String?) {
         person(pubkey).nickname = nickname?.takeIf { it.isNotBlank() }; refresh()
     }
+
+    override suspend fun setStrangers(strangers: Strangers) { settings = settings.copy(strangers = strangers); refresh() }
 
     override suspend fun syncNow() { delay(700); events.tryEmit(ClientEvent.Log("Synced")) }
 }

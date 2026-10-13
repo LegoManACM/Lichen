@@ -265,7 +265,7 @@ class FileService(
         // file_offer: sealed and signed like a message
         val inner = n.openSealedMsg(msg) ?: return fail("bad message")
         val sender = inner["from"].asString()!!
-        if (n.trust.blocked(sender)) return OK_REPLY  // dropped; don't tell them they're blocked
+        if (n.trust.dropped(sender)) return OK_REPLY  // dropped; don't tell them they're blocked
         n.seen(sender)
         n.typing.remove(sender)
         onOffer(s, n, inner)

@@ -19,6 +19,7 @@ import androidx.core.content.ContextCompat
 import dev.lichen.app.ui.*
 import dev.lichen.app.ui.theme.LichenTheme
 import dev.lichen.core.api.Settings
+import dev.lichen.core.api.Strangers
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -152,7 +153,8 @@ private fun LichenApp() {
             })
             top == "profile" -> ProfileScreen(c, onBack = ::pop, onSaveHubs = { name, hubs ->
                 // The profile's client is stopped, its settings saved and a new client opened; the service starts it.
-                scope.launch { profiles.saveSettings(id, Settings(name, hubs)) }
+                val strangers = c.profile.value?.strangers ?: Strangers.REQUESTS
+                scope.launch { profiles.saveSettings(id, Settings(name, hubs, strangers)) }
             }, onDelete = { deleting = infos.firstOrNull { it.id == id } }, onDebugLog = { push("debuglog") },
                 onColors = { push("colors") }, onSwitchProfile = { switcher = true })
             else -> ContactsScreen(

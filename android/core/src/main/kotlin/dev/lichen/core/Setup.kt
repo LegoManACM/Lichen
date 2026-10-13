@@ -4,6 +4,7 @@ import dev.lichen.core.api.ChatClient
 import dev.lichen.core.api.LichenSetup
 import dev.lichen.core.api.Settings
 import dev.lichen.core.api.SetupResult
+import dev.lichen.core.api.Strangers
 import dev.lichen.core.store.Phonebook
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
@@ -19,13 +20,15 @@ open class FileSetup(private val logSink: (String) -> Unit = {}) : LichenSetup {
     override fun settings(dataDir: File): Settings? {
         val f = File(dataDir, "settings.json")
         val o = (if (f.exists()) parseObject(f.readText(Charsets.UTF_8)) else null) ?: return null
-        return Settings(o["name"].asString() ?: return null, (o["hubs"] as? JsonArray)?.mapNotNull { it.asString() } ?: emptyList())
+        val strangers = Strangers.entries.firstOrNull { it.name.lowercase() == o["strangers"].asString() } ?: Strangers.REQUESTS
+        return Settings(o["name"].asString() ?: return null, (o["hubs"] as? JsonArray)?.mapNotNull { it.asString() } ?: emptyList(), strangers)
     }
 
     override fun saveSettings(dataDir: File, settings: Settings) {
         writeFileAtomic(File(dataDir, "settings.json"), dumps(obj {
             put("name", JsonPrimitive(settings.name))
             put("hubs", stringArray(settings.hubs))
+            if (settings.strangers != Strangers.REQUESTS) put("strangers", JsonPrimitive(settings.strangers.name.lowercase()))
         }))
     }
 

@@ -4,10 +4,20 @@ import java.io.File
 
 // Creating or importing an identity, before there is a ChatClient. The data folder uses the same file
 // names and formats as the Python node's data folder (key, enckey, device, phonebook.json, trust.json,
-// dms.json, outbox.json, linked), plus settings.json ({"name": ..., "hubs": [...]}) for what the
+// dms.json, outbox.json, linked), plus settings.json ({"name": ..., "hubs": [...], "strangers": ...}) for what the
 // Python node keeps in lichen.yaml.
 
-data class Settings(val name: String, val hubs: List<String>)
+data class Settings(val name: String, val hubs: List<String>, val strangers: Strangers = Strangers.REQUESTS)
+
+/** What happens when someone who isn't in your contacts (and isn't blocked) writes, offers a file or invites you. */
+enum class Strangers {
+    /** Their messages, file offers and invites wait in Requests (the default). */
+    REQUESTS,
+    /** Their chats go straight into the chat list. */
+    CHATS,
+    /** Dropped without telling them, as if blocked. */
+    IGNORE,
+}
 
 sealed interface SetupResult {
     data class Ok(val settings: Settings) : SetupResult

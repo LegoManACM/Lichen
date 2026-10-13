@@ -296,7 +296,7 @@ class Groups(
             "group_update" -> {
                 val group = GroupRecord.fromJson(msg["group"]) ?: return failed("bad group")
                 val known = store.get(group.groupId)
-                if (known == null && (ident.pubkey !in group.members || trust.blocked(group.owner))) return failed("not a member")
+                if (known == null && (ident.pubkey !in group.members || trust.dropped(group.owner))) return failed("not a member")
                 val wasMember = known != null && ident.pubkey in known.members
                 if (store.merge(group)) {
                     val inviter = name(group.owner)

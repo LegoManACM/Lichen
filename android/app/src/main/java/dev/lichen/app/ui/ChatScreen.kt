@@ -44,7 +44,9 @@ fun ChatScreen(client: ChatClient, profileId: String, pubkey: String, onBack: ()
     val messages by client.messages(pubkey).collectAsState()
     val people by client.people.collectAsState()
     val typingNow by client.typing.collectAsState()
-    val contact = people.firstOrNull { it.pubkey == pubkey }
+    val contacts by client.contacts.collectAsState()
+    // Someone added by their key may not be in the phonebook yet.
+    val contact = people.firstOrNull { it.pubkey == pubkey } ?: contacts.firstOrNull { it.pubkey == pubkey }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val resumed = LocalLifecycleOwner.current.lifecycle.currentStateAsState().value.isAtLeast(Lifecycle.State.RESUMED)

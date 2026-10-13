@@ -47,6 +47,7 @@ data class Profile(
     val hubs: List<String>,
     val fingerprint: String,  // pubkey in readable groups (identity.fingerprint)
     val device: String,       // this device's id
+    val strangers: Strangers = Strangers.REQUESTS,
 )
 
 sealed interface ClientEvent {
@@ -94,6 +95,9 @@ interface ChatClient {
 
     suspend fun setTrust(pubkey: String, trust: Trust)
     suspend fun setNickname(pubkey: String, nickname: String?)
+
+    /** What to do with strangers' messages, files and invites (saved in settings.json; no reconnect). */
+    suspend fun setStrangers(strangers: Strangers)
 
     /** Retry the outbox, re-sync chats, re-announce. */
     suspend fun syncNow()

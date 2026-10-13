@@ -122,5 +122,14 @@ IBM Plex Sans and IBM Plex Mono, bundled in `res/font` (SIL Open Font License; s
 
 These follow the same rules: contact info (key blocks as cards, a trust section), Manage profiles, onboarding
 (the mark and wordmark, two choice cards), the debug log (mono on `bar`), and the delete-profile dialog (a
-card with a Danger button). "Add someone" keeps the app's phonebook search under the mockup's "your key" card;
-there is no QR code yet, so the card shows your name and fingerprint, with Copy key and Share key buttons.
+card with a Danger button).
+
+"Add someone" follows SlabAdd: your key as a QR code (just the key; zxing core draws it), name, fingerprint,
+Copy key / Share key, then "OR ADD THEM": *Find by name on your hub* (the phonebook search) and *Paste a key*.
+"Scan their code" isn't built yet (it needs a camera scanner). The home **+** opens a small panel above it
+(the profile switcher's style) with Add someone and New group. File offers in a chat are the SlabChat file card:
+alert-colored while an incoming file waits for you or downloads (6dp progress bar), accent for yours.
+Settings → "When someone new writes" picks Requests / Chats / Ignore (`Strangers`, saved in settings.json).
+
+The launcher icon is the AppIcon artboard's: the mark on `#0D0F0C`, an adaptive icon with a monochrome layer
+(`res/drawable/ic_launcher_*.xml`).

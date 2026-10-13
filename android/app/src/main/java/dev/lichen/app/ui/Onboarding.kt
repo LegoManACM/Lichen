@@ -166,12 +166,15 @@ private fun ImportForm(dataDir: java.io.File, onBack: () -> Unit, onDone: () -> 
     )
 }
 
+/** Filled in for a new identity; change it to use another hub. */
+private const val DEFAULT_HUB = "wss://chat.afrikamcclintock.com"
+
 @Composable
 private fun NewForm(dataDir: java.io.File, onBack: () -> Unit, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var name by rememberSaveable { mutableStateOf("") }
-    val hubs = remember { mutableStateListOf("") }
+    val hubs = remember { mutableStateListOf(DEFAULT_HUB) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 

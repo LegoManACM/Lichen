@@ -552,7 +552,7 @@ class Node(
             "owed" -> {
                 val owed = msg["from"] as? JsonObject ?: JsonObject(emptyMap())
                 for ((sender, items) in owed) {
-                    if (trust.blocked(sender) || items !is JsonArray) continue
+                    if (trust.dropped(sender) || items !is JsonArray) continue
                     val seenSet = owedSeen.getOrPut(sender) { ConcurrentHashMap.newKeySet() }
                     val waiting = items.mapNotNull { it.asString() }.filter { id ->
                         id !in seenSet && !(id.startsWith("msg:") && dms.has(sender, id.substring(4)))
@@ -609,7 +609,7 @@ class Node(
             "msg" -> {
                 val inner = openSealedMsg(msg) ?: return failed("bad message")
                 val from = inner["from"].asString()!!
-                if (trust.blocked(from)) return OK  // dropped; don't tell them they're blocked
+                if (trust.dropped(from)) return OK  // dropped; don't tell them they're blocked
                 seen(from)
                 typing.remove(from)  // they finished typing
                 val stored = if ("id" in inner) inner else JsonObject(inner + ("id" to str(legacyId(inner))))

@@ -24,6 +24,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
@@ -59,6 +63,22 @@ fun Modifier.dashedBorder(color: Color, width: Dp = 2.dp): Modifier = drawBehind
         color, topLeft = Offset(w / 2, w / 2), size = size.copy(size.width - w, size.height - w),
         style = Stroke(w, pathEffect = PathEffect.dashPathEffect(floatArrayOf(w * 3, w * 2))),
     )
+}
+
+/** A 24-unit line icon from SVG path data (the mockups' icons that Material's core set doesn't have). */
+private fun strokeIcon(name: String, d: String, width: Float = 2.2f): ImageVector =
+    ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).addPath(
+        addPathNodes(d), fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = width,
+        strokeLineCap = StrokeCap.Square, strokeLineJoin = StrokeJoin.Miter,
+    ).build()
+
+/** Icons drawn the way the canvas draws them (stroke, square ends). */
+object SlabIcons {
+    val Download = strokeIcon("Download", "M12 4v11M7 10l5 5 5-5M5 20h14")
+    val Upload = strokeIcon("Upload", "M12 20V9M7 14l5-5 5 5M5 4h14")
+    val Paste = strokeIcon("Paste", "M8 8h12v12H8zM4 16V4h12", 2f)
+    val Group = strokeIcon("Group", "M9 4L7 20M17 4l-2 16M4 9h16M3 15h16", 2f)
+    val Person = strokeIcon("Person", "M8 8a4 4 0 1 0 8 0a4 4 0 1 0 -8 0M4 20v-1a5 5 0 0 1 5-5h6a5 5 0 0 1 5 5v1", 2f)
 }
 
 /** The Lichen mark: a cluster of accent dots with one alert-colored fruiting body. */
@@ -146,17 +166,20 @@ fun SlabButton(
     height: Dp = 44.dp,
     shadow: Dp = 3.dp,
     alignStart: Boolean = false,
+    fill: Color = Slab.colors.accent,
+    onFill: Color = Slab.colors.onAccent,
+    shadowColor: Color = Slab.colors.shadow,
 ) {
     val p = Slab.colors
     val danger = androidx.compose.material3.MaterialTheme.colorScheme.error
     val (bg, fg) = when (style) {
-        SlabButtonStyle.Primary -> p.accent to p.onAccent
+        SlabButtonStyle.Primary -> fill to onFill
         SlabButtonStyle.Card -> p.card to p.text
         SlabButtonStyle.Danger -> Color.Transparent to danger
         else -> Color.Transparent to p.text
     }
     var m = modifier.heightIn(min = height).alpha(if (enabled) 1f else 0.4f)
-    if (style == SlabButtonStyle.Primary && enabled && shadow > 0.dp) m = m.hardShadow(p.shadow, shadow)
+    if (style == SlabButtonStyle.Primary && enabled && shadow > 0.dp) m = m.hardShadow(shadowColor, shadow)
     m = m.background(bg)
     m = when (style) {
         SlabButtonStyle.Secondary -> m.slabBorder(p.strongLine)

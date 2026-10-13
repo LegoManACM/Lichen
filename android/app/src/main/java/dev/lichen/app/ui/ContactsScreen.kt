@@ -12,11 +12,26 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.foundation.Canvas
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -31,6 +46,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import dev.lichen.app.ui.theme.*
 import dev.lichen.core.api.*
+import dev.lichen.core.unb64
 import kotlinx.coroutines.launch
 
 /** Hubs up / hubs configured, as a small mono tag with a status square. */
@@ -78,24 +94,16 @@ fun ContactsScreen(
         bottomBar = {
             SlabNav(selected = 0, requests = requests.size, onChats = {}, onRequests = onRequests, onSettings = onProfile)
         },
-        floatingActionButton = {
-            Box(
-                Modifier.padding(end = 4.dp, bottom = 4.dp).size(58.dp).hardShadow(p.shadow, 5.dp).background(p.accent)
-                    .clickable(role = Role.Button, onClick = onNewChat),
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Default.Add, "Add someone", Modifier.size(28.dp), tint = p.onAccent) }
-        },
+        floatingActionButton = { AddMenu(onAddSomeone = onNewChat, onNewGroup = onNewGroup) },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             BatteryCard()
             if (requests.isNotEmpty()) RequestsBanner(requests.size, onRequests)
-            SlabButton("New group", onNewGroup, Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                style = SlabButtonStyle.Card, height = 36.dp)
             if (contacts.isEmpty() && groups.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         SectionLabel("NO CHATS YET")
-                        Text("Tap + to say hello to someone.", color = p.subtle, fontSize = 15.sp, textAlign = TextAlign.Center)
+                        Text("Tap + to add someone or start a group.", color = p.subtle, fontSize = 15.sp, textAlign = TextAlign.Center)
                     }
                 }
             } else {
@@ -106,6 +114,57 @@ fun ContactsScreen(
                     items(contacts, key = { it.pubkey }) { c -> ContactRow(c) { onOpenChat(c.pubkey) } }
                 }
             }
+        }
+    }
+}
+
+/**
+ * The + button and what it opens: a panel just above it (bar background, 2dp accent border, 6dp shadow,
+ * like the profile switcher) with Add someone and New group. Tapping outside or on the X closes it.
+ */
+@Composable
+private fun AddMenu(onAddSomeone: () -> Unit, onNewGroup: () -> Unit) {
+    val p = Slab.colors
+    var open by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    Box(
+        Modifier.padding(end = 4.dp, bottom = 4.dp).size(58.dp).hardShadow(p.shadow, 5.dp).background(p.accent)
+            .clickable(role = Role.Button) { open = !open },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(if (open) Icons.Default.Close else Icons.Default.Add, if (open) "Close" else "Add", Modifier.size(28.dp), tint = p.onAccent)
+        if (open) {
+            // Placed against the button box (which has 4dp around the button for its shadow); the panel keeps 6dp
+            // at its end and bottom for its own shadow, and sits 12dp above the button.
+            val offset = with(density) { IntOffset(2.dp.roundToPx(), (-68).dp.roundToPx()) }
+            Popup(
+                alignment = Alignment.BottomEnd, offset = offset, onDismissRequest = { open = false },
+                properties = PopupProperties(focusable = true),
+            ) {
+                Column(
+                    Modifier.padding(end = 6.dp, bottom = 6.dp).width(240.dp).hardShadow(p.shadow, 6.dp)
+                        .background(p.bar).slabBorder(p.accent),
+                ) {
+                    AddMenuItem(SlabIcons.Person, "Add someone", "Show your code, or find them") { open = false; onAddSomeone() }
+                    Box(Modifier.fillMaxWidth().height(2.dp).background(p.line))
+                    AddMenuItem(SlabIcons.Group, "New group", "Pick people from your contacts") { open = false; onNewGroup() }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddMenuItem(icon: ImageVector, label: String, sub: String, onClick: () -> Unit) {
+    val p = Slab.colors
+    Row(
+        Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(icon, null, Modifier.size(22.dp), tint = p.accent)
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = p.text)
+            Text(sub, fontSize = 12.sp, color = p.muted)
         }
     }
 }
@@ -224,78 +283,163 @@ private fun BatteryCard() {
     }
 }
 
+/** A key someone pasted, cleaned up, if it is one: 32 bytes of url-safe base64. */
+private fun pastedKey(text: String): String? {
+    val k = text.trim().removePrefix("lichen:").filterNot { it.isWhitespace() }.trimEnd('=')
+    return k.takeIf { runCatching { unb64(it).size == 32 }.getOrDefault(false) }
+}
+
+/** Your key as a QR code: dark modules on a light square, drawn module by module. */
+@Composable
+private fun KeyQr(key: String, modifier: Modifier = Modifier) {
+    val p = Slab.colors
+    val matrix = remember(key) {
+        runCatching {
+            QRCodeWriter().encode(
+                key, BarcodeFormat.QR_CODE, 0, 0,
+                mapOf(EncodeHintType.MARGIN to 0, EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M),
+            )
+        }.getOrNull()
+    }
+    Box(modifier.size(228.dp).hardShadow(p.accent, 6.dp).background(p.text).slabBorder(p.text).padding(14.dp)) {
+        if (matrix != null) Canvas(Modifier.fillMaxSize().semantics { contentDescription = "QR code of your key" }) {
+            val cell = size.width / matrix.width
+            for (y in 0 until matrix.height) for (x in 0 until matrix.width) {
+                if (matrix.get(x, y)) drawRect(p.bar, Offset(x * cell, y * cell), Size(cell + 0.5f, cell + 0.5f))
+            }
+        }
+    }
+}
+
 /**
- * "Add someone": your own key to hand out (copy / share), then everyone in your hubs' phonebook to
- * search and start a chat with.
+ * "Add someone" (the canvas's SlabAdd): your key as a QR code with your name and fingerprint, Copy key and
+ * Share key, then the ways to add them: find them by name in your hubs' phonebook, or paste their key.
  */
 @Composable
 fun PeopleScreen(client: ChatClient, onBack: () -> Unit, onOpenChat: (String) -> Unit) {
     val p = Slab.colors
     val ctx = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     val people by client.people.collectAsState()
     val me by client.profile.collectAsState()
-    var query by remember { mutableStateOf("") }
+    var mode by rememberSaveable { mutableStateOf<String?>(null) }  // null, "find" or "key"
+    var query by rememberSaveable { mutableStateOf("") }
+    var keyText by rememberSaveable { mutableStateOf("") }
     val shown = remember(people, query) {
         people.filter { query.isBlank() || it.displayName.contains(query, true) || it.name.contains(query, true) }
     }
     Scaffold(containerColor = p.ground, topBar = { SlabTopBar("Add someone", onBack = onBack, close = true) }) { pad ->
-        LazyColumn(Modifier.padding(pad).fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        LazyColumn(Modifier.padding(pad).fillMaxSize().imePadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
             me?.let { m ->
                 item {
                     Column(
-                        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp),
+                        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        Text("Give them your key. That's it.", fontSize = 15.sp, color = p.subtle)
-                        SlabCard(Modifier.fillMaxWidth().padding(end = 6.dp), shadow = p.accent, shadowOffset = 6.dp, border = p.text, background = p.text) {
-                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(m.name, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = p.ground)
-                                Text(m.fingerprint, fontFamily = Slab.mono, fontSize = 12.sp, letterSpacing = 0.06.em, color = p.ground)
-                            }
+                        Text("Have them scan this. That's it.", fontSize = 15.sp, color = p.subtle, textAlign = TextAlign.Center)
+                        KeyQr(m.pubkey)
+                        Column(
+                            Modifier.padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(m.name, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = p.text)
+                            Text(m.fingerprint, fontFamily = Slab.mono, fontSize = 11.sp, letterSpacing = 0.06.em, color = p.muted)
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             SlabButton("Copy key", { clipboard.setText(AnnotatedString(m.pubkey)) }, Modifier.weight(1f), SlabButtonStyle.Secondary)
                             SlabButton("Share key", {
                                 val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, m.pubkey)
                                 runCatching { ctx.startActivity(Intent.createChooser(send, "Share your Lichen key")) }
-                            }, Modifier.weight(1f), SlabButtonStyle.Secondary, icon = Icons.Default.Share)
+                            }, Modifier.weight(1f), SlabButtonStyle.Secondary)
                         }
                     }
                 }
             }
             item {
-                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 28.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SectionLabel("OR FIND THEM ON YOUR HUB")
+                Column(Modifier.padding(start = 16.dp, end = 20.dp, top = 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SectionLabel("OR ADD THEM")
+                    AddWay(Icons.Default.Search, "Find by name on your hub", mode == "find") { mode = if (mode == "find") null else "find" }
+                    AddWay(SlabIcons.Paste, "Paste a key", mode == "key") {
+                        if (mode == "key") mode = null else {
+                            mode = "key"
+                            if (keyText.isEmpty()) clipboard.getText()?.text?.let { pastedKey(it) }?.let { keyText = it }
+                        }
+                    }
+                }
+            }
+            if (mode == "key") {
+                item {
+                    val key = pastedKey(keyText)
+                    val mine = key != null && key == me?.pubkey
+                    Column(Modifier.padding(start = 16.dp, end = 20.dp, top = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            keyText, { keyText = it }, Modifier.fillMaxWidth(), placeholder = { Text("Their key") },
+                            colors = slabFieldColors(), textStyle = LocalTextStyle.current.copy(fontFamily = Slab.mono, fontSize = 14.sp),
+                            isError = keyText.isNotBlank() && (key == null || mine),
+                            supportingText = {
+                                val (label, color) = when {
+                                    keyText.isBlank() -> "THE KEY THEY COPIED OR SHARED" to p.muted
+                                    key == null -> "NOT A LICHEN KEY" to MaterialTheme.colorScheme.error
+                                    mine -> "THAT'S YOUR OWN KEY" to MaterialTheme.colorScheme.error
+                                    else -> "KEY ${fingerprint(key)}" to p.accent
+                                }
+                                Text(label, fontFamily = Slab.mono, fontSize = 10.sp, letterSpacing = 0.1.em, color = color)
+                            },
+                        )
+                        SlabButton("Add and say hello", {
+                            val k = key ?: return@SlabButton
+                            scope.launch { client.setTrust(k, Trust.TRUSTED); onOpenChat(k) }
+                        }, Modifier.fillMaxWidth(), enabled = key != null && !mine, height = 52.dp, shadow = 4.dp)
+                    }
+                }
+            }
+            if (mode == "find") {
+                item {
                     OutlinedTextField(
-                        query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search by name") }, singleLine = true,
+                        query, { query = it }, Modifier.fillMaxWidth().padding(start = 16.dp, end = 20.dp, top = 16.dp, bottom = 8.dp),
+                        placeholder = { Text("Search by name") }, singleLine = true,
                         leadingIcon = { Icon(Icons.Default.Search, null, tint = p.muted) }, colors = slabFieldColors(),
                     )
                 }
-            }
-            if (shown.isEmpty()) {
-                item { Text("No one found.", Modifier.padding(horizontal = 16.dp, vertical = 12.dp), color = p.muted) }
-            }
-            items(shown, key = { it.pubkey }) { c ->
-                Row(
-                    Modifier.fillMaxWidth().clickable { onOpenChat(c.pubkey) }.padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Avatar(c, 40.dp, showOnline = false)
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(c.displayName, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(
-                            when (c.trust) {
-                                Trust.BLOCKED -> "BLOCKED"
-                                Trust.UNKNOWN -> "NOT IN YOUR CONTACTS"
-                                Trust.TRUSTED -> fingerprint(c.pubkey)
-                            },
-                            fontFamily = Slab.mono, fontSize = 10.sp, letterSpacing = 0.06.em, color = p.muted,
-                        )
+                if (shown.isEmpty()) {
+                    item { Text("No one found.", Modifier.padding(horizontal = 16.dp, vertical = 12.dp), color = p.muted) }
+                }
+                items(shown, key = { it.pubkey }) { c ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onOpenChat(c.pubkey) }.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Avatar(c, 40.dp, showOnline = false)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(c.displayName, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                when (c.trust) {
+                                    Trust.BLOCKED -> "BLOCKED"
+                                    Trust.UNKNOWN -> "NOT IN YOUR CONTACTS"
+                                    Trust.TRUSTED -> fingerprint(c.pubkey)
+                                },
+                                fontFamily = Slab.mono, fontSize = 10.sp, letterSpacing = 0.06.em, color = p.muted,
+                            )
+                        }
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(16.dp), tint = p.muted)
                     }
-                    Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(16.dp), tint = p.muted)
                 }
             }
         }
+    }
+}
+
+/** One of the "OR ADD THEM" actions: a 56dp card button; the open one gets an accent border. */
+@Composable
+private fun AddWay(icon: ImageVector, label: String, open: Boolean, onClick: () -> Unit) {
+    val p = Slab.colors
+    Row(
+        Modifier.fillMaxWidth().height(56.dp).background(p.card).slabBorder(if (open) p.accent else p.edge)
+            .clickable(role = Role.Button, onClick = onClick).padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(icon, null, Modifier.size(22.dp), tint = p.text)
+        Text(label, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = p.text)
     }
 }

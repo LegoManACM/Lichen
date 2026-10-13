@@ -13,6 +13,7 @@ import dev.lichen.core.api.HubStatus
 import dev.lichen.core.api.MessageStatus
 import dev.lichen.core.api.Profile
 import dev.lichen.core.api.Settings
+import dev.lichen.core.api.Strangers
 import dev.lichen.core.api.Trust
 import dev.lichen.core.asDouble
 import dev.lichen.core.asLong
@@ -64,7 +65,7 @@ private val ACTIONS = setOf("react", "edit", "delete")  // TODO(phase 2): replie
  */
 class NodeClient(private val dataDir: File, private val logSink: (String) -> Unit = {}) : ChatClient {
     private class Loaded(
-        val settings: Settings, val ident: Identity, val enc: EncKey, val device: String,
+        @Volatile var settings: Settings, val ident: Identity, val enc: EncKey, val device: String,
         val phonebook: Phonebook, val dms: DmStore, val outbox: Outbox, val trust: TrustStore,
         val groupStore: GroupStore,
     )
@@ -141,8 +142,9 @@ class NodeClient(private val dataDir: File, private val logSink: (String) -> Uni
         val hook = { markDirty() }
         l.phonebook.onChange = hook; l.dms.onChange = hook; l.outbox.onChange = hook; l.trust.onChange = hook; l.groupStore.onChange = hook; l.groupStore.onRemoteChange = hook
         groupsClient.bind(l.groupStore, ident, l.phonebook, l.trust)
+        l.trust.ignoreStrangers = settings.strangers == Strangers.IGNORE
         loaded = l
-        _profile.value = Profile(ident.pubkey, settings.name, settings.hubs, fingerprint(ident.pubkey), l.device)
+        _profile.value = Profile(ident.pubkey, settings.name, settings.hubs, fingerprint(ident.pubkey), l.device, settings.strangers)
         _hubs.value = settings.hubs.map { HubStatus(it, false) }
         markDirty()
         return l
@@ -289,6 +291,15 @@ class NodeClient(private val dataDir: File, private val logSink: (String) -> Uni
         }
     }
 
+    override suspend fun setStrangers(strangers: Strangers) = withContext(Dispatchers.IO) {
+        val l = loading.await()
+        l.settings = l.settings.copy(strangers = strangers)
+        dev.lichen.core.FileSetup().saveSettings(dataDir, l.settings)
+        l.trust.ignoreStrangers = strangers == Strangers.IGNORE
+        _profile.value = _profile.value?.copy(strangers = strangers)
+        markDirty()
+    }
+
     // --- state for the UI ------------------------------------------------------------------------
 
     override fun messages(pubkey: String): StateFlow<List<ChatMessage>> =
@@ -338,7 +349,10 @@ class NodeClient(private val dataDir: File, private val logSink: (String) -> Uni
         val keys = (l.trust.keys("trusted") + l.dms.peers()).filter { it != me && !l.trust.blocked(it) }.distinct()
         _contacts.value = keys.map { contactFor(l, it) }
             .sortedWith(compareByDescending<Contact> { it.lastMessage?.ts ?: 0.0 }.thenBy { it.displayName.lowercase() })
-        _requests.value = _contacts.value.filter { it.trust == Trust.UNKNOWN && it.lastMessage != null }
+        // Ignoring strangers hides the ones who wrote before, too; with CHATS they're in the list, not waiting.
+        if (l.settings.strangers == Strangers.IGNORE) _contacts.value = _contacts.value.filter { it.trust == Trust.TRUSTED }
+        _requests.value = if (l.settings.strangers != Strangers.REQUESTS) emptyList()
+            else _contacts.value.filter { it.trust == Trust.UNKNOWN && it.lastMessage != null }
         val now = Canonical.nowSeconds()
         _typing.value = runningNode?.typing?.filterValues { it > now }?.keys ?: emptySet()
         _people.value = l.phonebook.all().filter { it.pubkey != me }.map { contactFor(l, it.pubkey, withLast = false) }
