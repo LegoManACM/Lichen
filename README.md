@@ -262,6 +262,23 @@ The trade-off: delivery needs you and the recipient online at the same time at s
 can't hand over anything on your behalf. Group chat already catches up from any member who's online,
 so groups don't need IOUs.
 
+## Replies, reactions, edits and deletes
+
+Every message in a conversation has a number on the left. In a chat (or after `/open NAME` /
+`/open #group` in the plain CLI):
+
+| command | does |
+|---|---|
+| `/reply 12 sounds good` | replies to message 12 (shown with a quote of it) |
+| `/react 12 +1` | reacts with 👍 (also `heart`, `laugh`, `wow`, `sad`, `fire`, `party`, `eyes`, `100`, or any emoji); again to undo |
+| `/edit 12 new text` / `/edit last ...` | changes one of your messages; in the TUI, **↑** in an empty box starts editing your last one |
+| `/delete 12` / `/delete last` | deletes one of your messages, for everyone |
+
+Under the hood these are ordinary signed, encrypted messages that point at another message's id, so
+they work offline (IOUs), sync, and dedupe like everything else. Edits and deletes from anyone but the
+original author are ignored. Deleting is best effort: honest clients hide the text, but someone who
+already received it could have kept a copy.
+
 ## Trust, requests and invites
 
 Every key is **trusted** (a contact), **unknown**, or **blocked** (`trust.json`):

@@ -473,12 +473,13 @@ class Node:
             pass
         return None
 
-    async def send(self, pubkey: str, text: str) -> str | None:
-        """Returns "delivered", "queued" (held by their relay until they're back), or None.
-        Messaging someone makes them a trusted contact (unless you've blocked them)."""
-        if self.trust.get(pubkey) == "unknown":
+    async def send(self, pubkey: str, text: str, extra: dict | None = None) -> str | None:
+        """Returns "delivered", "waiting" (in our outbox until they're back), or None.
+        Messaging someone makes them a trusted contact (unless you've blocked them). extra carries
+        replies / reactions / edits (see thread.py)."""
+        if self.trust.get(pubkey) == "unknown" and not (extra or {}).get("kind"):
             self.trust.set(pubkey, "trusted")
-        result, inner = await self._send_sealed("msg", pubkey, {"text": text})
+        result, inner = await self._send_sealed("msg", pubkey, {"text": text, **(extra or {})})
         if result:
             self.dms.add(pubkey, inner)
         return result
@@ -691,7 +692,7 @@ class Node:
         old = self._owned(group_id)
         return await self._publish(old.name, old.members, old, {**old.settings, "history": history})
 
-    async def send_group(self, group_id: str, text: str) -> tuple[int, int]:
+    async def send_group(self, group_id: str, text: str, extra: dict | None = None) -> tuple[int, int]:
         """Deliver to every member we can reach right now. Returns (delivered, other
         members). Anyone missed picks it up later via sync, from us or anyone else who has it."""
         group = self.groups.get(group_id)
@@ -699,7 +700,7 @@ class Node:
             raise ValueError("not a member of that group")
         if not self.groups.joined(group_id):
             raise ValueError("accept the invite first (/accept)")
-        envelope = self.groups.seal_message(group_id, text)
+        envelope = self.groups.seal_message(group_id, text, extra)
         self.groups.add_message(envelope)
         msg = {"type": "group_msg", "envelope": envelope, "group": group.to_dict()}
         others = [m for m in group.members if m != self.ident.pubkey]

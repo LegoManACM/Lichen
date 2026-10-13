@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from . import thread
 from .files import human_size
 from .groups import GroupRecord
 from .identity import fingerprint, safety_code, short
@@ -29,6 +30,13 @@ COMMANDS = [
     Spec("/g", "GROUP TEXT", "send to a group", ("group", "text")),
     Spec("/send", "NAME|#GROUP PATH", "offer someone (or a group) a file; they choose whether to accept",
          ("target", "path*")),
+    Spec("/open", "NAME|#GROUP", "show a conversation, numbered; /reply /react /edit /delete act on it",
+         ("target",)),
+    Spec("/reply", "N TEXT", "reply to message N of the open conversation", ("text", "text")),
+    Spec("/react", "N EMOJI", "react to message N (+1 heart laugh wow sad fire party...); again to undo",
+         ("text", "emoji")),
+    Spec("/edit", "N|last TEXT", "change one of your messages", ("text", "text")),
+    Spec("/delete", "N|last", "delete one of your messages, for everyone", ("text",)),
     Spec("/requests", "", "invites, file offers and messages waiting for you"),
     Spec("/accept", "ITEM", "accept a group invite, a file offer, or a stranger's messages", ("pending",)),
     Spec("/decline", "ITEM", "decline a group invite or a file offer", ("pending",)),
@@ -106,6 +114,73 @@ class Commands:
     def __init__(self, node: Node, out: Callable[[str], None]):
         self.node = node
         self.out = out
+        # The conversation /reply /react /edit /delete act on: ("dm", pubkey) or ("group", group_id).
+        # The TUI sets it to whatever is open; in the CLI, /open sets it.
+        self.context: tuple[str, str] | None = None
+
+    # --- conversations: replies, reactions, edits ---------------------------------------------------
+
+    def view(self, context: tuple[str, str] | None = None) -> list[thread.Item]:
+        kind, ident = context or self.context or ("", "")
+        if kind == "dm":
+            return thread.build(self.node.dms.messages(ident))
+        if kind == "group":
+            return thread.build(self.node.groups.messages(ident))
+        return []
+
+    def format_item(self, item: thread.Item, items: list[thread.Item] | None = None) -> str:
+        """Plain-text rendering (the CLI's; the TUI styles its own)."""
+        who = "you" if item.sender == self.node.ident.pubkey else self.name_of(item.sender)
+        text = "(deleted)" if item.deleted else item.text + (" (edited)" if item.edited else "")
+        quote = ""
+        if item.reply_to:
+            original = next((i for i in items or [] if i.id == item.reply_to), None)
+            quote = (f" [re #{original.number} {self.name_of(original.sender)}: {original.text[:40]!r}]"
+                     if original else " [re: a message you don't have]")
+        reacts = "  " + " ".join(f"{e}{len(s) if len(s) > 1 else ''}" for e, s in item.reactions.items()) \
+            if item.reactions else ""
+        return f"{item.number:>4}  {time.strftime('%H:%M', time.localtime(item.ts))} {who}:{quote} {text}{reacts}"
+
+    def describe_action(self, m: dict, context: tuple[str, str]) -> str | None:
+        """One line for an incoming reaction / edit / delete, or None for a normal message."""
+        kind = m.get("kind")
+        if kind not in thread.ACTIONS:
+            return None
+        who = self.name_of(m["from"])
+        target = next((i for i in self.view(context) if i.id == m.get("target")), None)
+        about = f" #{target.number} {target.text[:40]!r}" if target and not target.deleted else ""
+        if kind == "react":
+            return f"{who} reacted {thread.emoji(str(m.get('text', '')))} to{about or ' a message'}"
+        if kind == "edit":
+            return f"{who} edited{about or ' a message'}"
+        return f"{who} deleted a message"
+
+    async def _post(self, text: str, extra: dict) -> None:
+        kind, ident = self.context
+        if kind == "dm":
+            result = await self.node.send(ident, text, extra)
+            if result != "delivered":
+                self.out("  " + SEND_RESULT[result])
+        elif g := self.node.groups.get(ident):
+            await self.send_group(g, text, extra)
+
+    def _target(self, ref: str, mine: bool = False) -> thread.Item | None:
+        if not self.context:
+            self.out("  open a conversation first (/open NAME or /open #group)")
+            return None
+        items = self.view()
+        if ref.lower() == "last":
+            pool = [i for i in items if not i.deleted and (i.sender == self.node.ident.pubkey) == mine] if mine \
+                else [i for i in items if not i.deleted and i.sender != self.node.ident.pubkey]
+            item = pool[-1] if pool else None
+        else:
+            item = thread.by_number(items, int(ref)) if ref.isdigit() else None
+        if not item:
+            self.out(f"  no message {ref!r} here; the numbers are on the left of each message")
+        elif mine and item.sender != self.node.ident.pubkey:
+            self.out("  you can only edit or delete your own messages")
+            return None
+        return item
 
     def name_of(self, pubkey: str) -> str:
         """What to call someone: your nickname for them if you set one, else their own name, with a
@@ -180,9 +255,9 @@ class Commands:
             return None
         return matches[0]
 
-    async def send_group(self, g: GroupRecord, text: str) -> None:
+    async def send_group(self, g: GroupRecord, text: str, extra: dict | None = None) -> None:
         try:
-            delivered, total = await self.node.send_group(g.group_id, text)
+            delivered, total = await self.node.send_group(g.group_id, text, extra)
         except ValueError as e:
             self.out(f"  {e}")
             return
@@ -264,6 +339,8 @@ class Commands:
             return out
         if kind == "mode":
             return ["private", "shared"]
+        if kind == "emoji":
+            return list(thread.EMOJI)
         if kind == "groupsub":
             return list(GROUP_SUBS)
         return []
@@ -350,7 +427,7 @@ class Commands:
         options = self._candidates(kind, tokens) if kind and kind != "groupsub" else []
         if options:
             label = {"peer": "people", "contact": "contacts", "blocked": "blocked", "group": "groups",
-                     "mode": "options", "target": "contacts / groups", "pending": "waiting",
+                     "mode": "options", "target": "contacts / groups", "pending": "waiting", "emoji": "emoji",
                      "member": "members"}[kind.rstrip("*")]
             shown = ", ".join(options[:12]) + (" …" if len(options) > 12 else "")
             usage += f"\n{label}: {shown}"
@@ -445,10 +522,11 @@ class Commands:
                 await self.send_group(g, text)
         elif cmd == "/history" and rest:
             parts = rest.split()
-            if g := self.group(parts[0]):
+            if g := self.group(parts[0].lstrip("#")):
                 n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 20
-                for e in node.groups.messages(g.group_id)[-n:]:
-                    out(f"  {time.strftime('%H:%M', time.localtime(e['ts']))} <{self.name_of(e['from'])}> {e['text']}")
+                items = self.view(("group", g.group_id))
+                for item in items[-n:]:
+                    out(self.format_item(item, items))
         elif cmd == "/sync":
             out(f"  {await node.sync_all()} new group message(s), {await node.sync_dms()} new direct message(s)")
             sent = await node.flush_outbox()
@@ -457,6 +535,33 @@ class Commands:
             waiting = len(node.outbox.items)
             if waiting:
                 out(f"  {waiting} item(s) still waiting for their recipients to come online")
+        elif cmd == "/open" and rest:
+            if rest.startswith("#"):
+                if g := self.group(rest[1:]):
+                    self.context = ("group", g.group_id)
+            elif r := self.peer(rest):
+                self.context = ("dm", r.pubkey)
+            if self.context:
+                items = self.view()
+                for item in items[-20:]:
+                    out(self.format_item(item, items))
+                if not items:
+                    out("  no messages yet")
+        elif cmd == "/reply" and " " in rest:
+            ref, text = rest.split(" ", 1)
+            if item := self._target(ref):
+                await self._post(text, {"reply_to": item.id})
+        elif cmd == "/react" and " " in rest:
+            ref, symbol = rest.split(" ", 1)
+            if item := self._target(ref):
+                await self._post(thread.emoji(symbol), {"kind": "react", "target": item.id})
+        elif cmd == "/edit" and " " in rest:
+            ref, text = rest.split(" ", 1)
+            if item := self._target(ref, mine=True):
+                await self._post(text, {"kind": "edit", "target": item.id})
+        elif cmd == "/delete" and rest:
+            if item := self._target(rest.split()[0], mine=True):
+                await self._post("", {"kind": "delete", "target": item.id})
         elif cmd == "/requests":
             items = self.requests()
             if not items:

@@ -39,7 +39,7 @@ class DmStore:
         if message["id"] in ids:
             return False
         log = self.convos.setdefault(peer, [])
-        entry = {k: message[k] for k in ("id", "from", "to", "ts", "text", "sig") if k in message}
+        entry = dict(message)  # keep every signed field (replies, reactions...) so sync can re-verify it
         log.append(entry)
         if len(log) > 1 and log[-2]["ts"] > entry["ts"]:  # arrived out of order (sync, late retry)
             log.sort(key=lambda m: m["ts"])

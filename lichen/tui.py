@@ -83,7 +83,13 @@ class PathSuggester(Suggester):
 class CommandInput(Input):
     """Input where Tab accepts the suggestion (and moves focus as usual when there isn't one)."""
 
-    BINDINGS = [Binding("tab", "complete", "Complete", show=False, priority=True)]
+    BINDINGS = [Binding("tab", "complete", "Complete", show=False, priority=True),
+                Binding("up", "recall", "Edit last message", show=False)]
+
+    def action_recall(self) -> None:
+        """↑ in an empty box: edit your last message in this conversation."""
+        if not self.value and hasattr(self.app, "recall_last"):
+            self.app.recall_last()
 
     def action_complete(self) -> None:
         if self._suggestion and self.cursor_at_end and len(self._suggestion) > len(self.value):
@@ -295,8 +301,29 @@ class ChatApp(App):
             return f"{head}  [red]failed: {escape(o.get('error') or '')}[/] (/accept {escape(o['name'])} resumes)"
         return f"{head}  [dim]{escape(status or '')}{': ' + escape(o['error']) if o.get('error') else ''}[/]"
 
-    def _entry_line(self, entry: dict) -> str:
-        return self._file_line(entry) if "file" in entry else self._line(entry["from"], entry["text"], entry["ts"])
+    def _item_line(self, item, by_id: dict) -> str:
+        """A message with its number, reply quote, edit/delete state and reactions."""
+        me = item.sender == self.node.ident.pubkey
+        color = "green" if me else "cyan"
+        lines = []
+        if item.reply_to:
+            original = by_id.get(item.reply_to)
+            quoted = (f"{escape(self._who(original.sender))}: {escape(original.text[:60]) or '(deleted)'}"
+                      if original else "a message you don't have")
+            lines.append(f"      [dim]↪ {quoted}[/]")
+        text = "[dim i](deleted)[/]" if item.deleted else escape(item.text) + (" [dim](edited)[/]" if item.edited else "")
+        reacts = ("  " + " ".join(f"{e}{len(s) if len(s) > 1 else ''}" for e, s in item.reactions.items())
+                  if item.reactions else "")
+        lines.append(f"[dim]{item.number:>3} {_clock(item.ts)}[/] [bold {color}]{escape(self._who(item.sender))}[/] "
+                     f"{text}{reacts}")
+        return "\n".join(lines)
+
+    def _entry_line(self, entry: dict, by_id: dict | None = None) -> str:
+        if "file" in entry:
+            return self._file_line(entry)
+        if "item" in entry:
+            return self._item_line(entry["item"], by_id or {})
+        return self._line(entry["from"], entry["text"], entry["ts"])
 
     # --- sidebar -----------------------------------------------------------------------------------
 
@@ -375,14 +402,13 @@ class ChatApp(App):
         if not self.node or kind not in ("dm", "group"):
             return []
         files = self.node.files
+        entries = [{"item": item, "ts": item.ts} for item in self.commands.view(key)]
         if kind == "dm":
-            entries = list(self.node.dms.messages(ident))
             entries += [{"file": fid, "dir": "in", "ts": o["ts"]} for fid, o in files.incoming.items()
                         if o["from"] == ident and not o.get("group")]
             entries += [{"file": fid, "dir": "out", "ts": e["ts"]} for fid, e in files.outgoing.items()
                         if e["to"] == [ident] and not e.get("group")]
         else:
-            entries = list(self.node.groups.messages(ident))
             entries += [{"file": fid, "dir": "in", "ts": o["ts"]} for fid, o in files.incoming.items()
                         if o.get("group") == ident]
             entries += [{"file": fid, "dir": "out", "ts": e["ts"]} for fid, e in files.outgoing.items()
@@ -394,6 +420,8 @@ class ChatApp(App):
             return
         self.current = key
         self.unread.pop(key, None)
+        if self.commands:
+            self.commands.context = key if key[0] in ("dm", "group") else None
         chat = self.query_one("#chat", RichLog)
         chat.clear()
         if key == CONSOLE:
@@ -409,11 +437,7 @@ class ChatApp(App):
             chat.write(f"Type [reverse] /accept {escape(g.name)} [/] to join, or /decline {escape(g.name)}. "
                        "Nothing from the group shows until you join.")
         else:
-            history = self._history(key)
-            for entry in history[-500:]:
-                chat.write(self._entry_line(entry))
-            if not history:
-                chat.write("[dim]No messages yet. Say hi! (Ctrl+F sends a file)[/]")
+            self._draw_history(key)
             if key[0] == "dm" and self.commands and (warning := self.commands.impostor_warning(key[1])):
                 chat.write(f"[bold red]{escape(warning)}[/]")
             if key[0] == "dm" and self.commands and key[1] in self.commands.message_requests():
@@ -428,6 +452,39 @@ class ChatApp(App):
             key, f"Message {self._convo_name(key)}  ·  Ctrl+F or drop a file to send one  ·  /commands work too")
         self._update_hints(inp.value)
         inp.focus()
+
+    def _draw_history(self, key: tuple[str, str]) -> None:
+        chat = self.query_one("#chat", RichLog)
+        history = self._history(key)
+        by_id = {e["item"].id: e["item"] for e in history if "item" in e}
+        for entry in history[-500:]:
+            chat.write(self._entry_line(entry, by_id))
+        if not history:
+            chat.write("[dim]No messages yet. Say hi! (Ctrl+F sends a file)[/]")
+
+    def _redraw(self) -> None:
+        """Re-render the open conversation (numbers, edits and reactions can change earlier lines)."""
+        if self.current[0] in ("dm", "group") and not (
+                self.current[0] == "group" and self.node.groups.status.get(self.current[1]) == "pending"):
+            self.query_one("#chat", RichLog).clear()
+            self._draw_history(self.current)
+
+    def recall_last(self) -> None:
+        if not self.commands or self.current[0] not in ("dm", "group"):
+            return
+        mine = [i for i in self.commands.view() if i.sender == self.node.ident.pubkey and not i.deleted]
+        if mine:
+            inp = self.query_one("#input", CommandInput)
+            inp.value = f"/edit {mine[-1].number} {mine[-1].text}"
+            inp.cursor_position = len(inp.value)
+
+    def _raw_count(self, key: tuple[str, str]) -> int:
+        kind, ident = key
+        if kind == "dm":
+            return len(self.node.dms.messages(ident)) + len(self.node.files.incoming) + len(self.node.files.outgoing)
+        if kind == "group":
+            return len(self.node.groups.messages(ident)) + len(self.node.files.incoming) + len(self.node.files.outgoing)
+        return 0
 
     def _render_requests(self) -> None:
         chat = self.query_one("#chat", RichLog)
@@ -490,17 +547,18 @@ class ChatApp(App):
     def _dm_received(self, rec, text: str, inner: dict) -> None:
         sender = inner["from"]
         quiet = not self.node.trust.trusted(sender)  # strangers' messages are requests: no toast
-        self._incoming(("dm", sender), self._line(sender, text, inner["ts"]),
-                       None if quiet else f"{self._who(sender)}: {text}")
+        self._incoming(("dm", sender), inner, None if quiet else f"{self._who(sender)}: {text}")
 
     def _group_received(self, group, rec, text: str, inner: dict, live: bool) -> None:
-        note = "" if live else " [dim](caught up)[/]"
-        self._incoming(("group", inner["group"]), self._line(inner["from"], text, inner["ts"], note),
-                       f"{self._who(inner['from'])} in #{group.name}: {text}")
+        self._incoming(("group", inner["group"]), inner, f"{self._who(inner['from'])} in #{group.name}: {text}")
 
-    def _incoming(self, key, line: str, toast: str | None) -> None:
+    def _incoming(self, key, inner: dict, toast: str | None) -> None:
+        action = self.commands.describe_action(inner, key)
         if self.current == key:
-            self.query_one("#chat", RichLog).write(line)
+            self._redraw()
+        elif action:
+            if toast:  # reactions and edits get a quiet toast, not an unread count
+                self.notify(action[:120], timeout=3)
         else:
             self.unread[key] = self.unread.get(key, 0) + 1
             if toast:
@@ -591,17 +649,18 @@ class ChatApp(App):
         if dropped := dropped_file(text):
             self.run_worker(self._send_file(dropped))
             return
-        chat = self.query_one("#chat", RichLog)
         if kind == "dm":
             result = await self.node.send(ident, text)
-            note = {"delivered": "", "waiting": " [dim](they're offline: will send when you're both online)[/]"}.get(
-                result, " [red](not delivered)[/]")
-            chat.write(self._line(self.node.ident.pubkey, text, time.time(), note))
+            self._redraw()
+            if result != "delivered":
+                note = ("they're offline: it'll go out when you're both online" if result == "waiting"
+                        else "[red]not delivered[/]")
+                self.query_one("#chat", RichLog).write(f"      [dim]{note}[/]")
         else:
             g = self.node.groups.get(ident)
             if g:
                 await self.commands.send_group(g, text)
-                chat.write(self._line(self.node.ident.pubkey, text, time.time()))
+                self._redraw()
         self.refresh_sidebar()
 
     async def _run_command(self, line: str) -> None:
@@ -609,16 +668,16 @@ class ChatApp(App):
         self.to_console(echo)
         if self.current != CONSOLE:
             self.query_one("#chat", RichLog).write(echo)
-        # A command can add things to the open conversation (/msg, /g, /send to it): show just those.
+        # A command can change the open conversation (/reply, /react, /edit, /send to it...): if it did,
+        # redraw it; otherwise leave the command's output on screen.
         key = self.current
-        before = len(self._history(key))
+        before = self._raw_count(key)
         if not await self.commands.run(line):
             await self.action_quit()
             return
         if self.current == key and key[0] in ("dm", "group"):
-            chat = self.query_one("#chat", RichLog)
-            for entry in self._history(key)[before:]:
-                chat.write(self._entry_line(entry))
+            if self._raw_count(key) != before:
+                self._redraw()
         elif self.current == REQUESTS:
             self.open(REQUESTS)
         self.refresh_sidebar()

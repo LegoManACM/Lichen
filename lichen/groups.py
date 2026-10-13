@@ -214,11 +214,12 @@ class GroupStore:
 
     # --- messages --------------------------------------------------------------------------------
 
-    def seal_message(self, group_id: str, text: str) -> dict:
-        """Sign and encrypt a message under the group's current epoch. Returns the outer envelope."""
+    def seal_message(self, group_id: str, text: str, extra: dict | None = None) -> dict:
+        """Sign and encrypt a message under the group's current epoch. Returns the outer envelope.
+        extra carries replies / reactions / edits (see thread.py)."""
         rec = self.groups[group_id]
         inner = {"group": group_id, "from": self.ident.pubkey, "ts": time.time(),
-                 "nonce": b64(os.urandom(8)), "text": text, "private": rec.history == "private"}
+                 "nonce": b64(os.urandom(8)), "text": text, "private": rec.history == "private", **(extra or {})}
         inner["sig"] = self.ident.sign(canonical(inner))
         box = encrypt(self.keys[group_id][rec.epoch], canonical(inner), _aad(group_id, rec.epoch))
         return {"group": group_id, "epoch": rec.epoch, **box, "id": _msg_id(box["ct"])}
@@ -252,8 +253,9 @@ class GroupStore:
         return msg_id in self.logs.get(group_id, {})
 
     def messages(self, group_id: str) -> list[dict]:
-        """Decrypted messages, oldest first."""
-        return sorted((m["inner"] for m in self.logs.get(group_id, {}).values()), key=lambda i: i["ts"])
+        """Decrypted messages, oldest first, each with its message id."""
+        return sorted(({**m["inner"], "id": m["outer"]["id"]} for m in self.logs.get(group_id, {}).values()),
+                      key=lambda i: i["ts"])
 
     def missing_for(self, group_id: str, have: set[str], requester: str) -> list[dict]:
         """Ciphertexts requester lacks. Private-era messages from before they joined are skipped:

@@ -457,6 +457,56 @@ async def main() -> None:
             print(f"   passphrase {attempt!r}: refused ({type(e).__name__})")
     assert Node.from_dir(locked, "locked", passphrase="hunter2").ident.pubkey
 
+    step("replies, reactions, edits and deletes (DM)")
+    d_out, e_out = [], []
+    dc, ec = Commands(dave, d_out.append), Commands(erin, e_out.append)
+    dc.context, ec.context = ("dm", erin.ident.pubkey), ("dm", dave.ident.pubkey)
+    assert await dave.send(erin.ident.pubkey, "lunch?") == "delivered"
+    await asyncio.sleep(SETTLE)
+    lunch = [i for i in ec.view() if i.text == "lunch?"][0]
+    await ec.run(f"/reply {lunch.number} yes!")
+    await ec.run(f"/react {lunch.number} +1")
+    await asyncio.sleep(SETTLE)
+    d_lunch = [i for i in dc.view() if i.id == lunch.id][0]
+    reply = [i for i in dc.view() if i.text == "yes!"][0]
+    assert reply.reply_to == lunch.id and d_lunch.reactions == {"👍": [erin.ident.pubkey]}
+    print(f"   dave sees: {dc.format_item(reply, dc.view())!r} and a reaction on #{d_lunch.number}")
+    await dc.run("/edit last lunch at noon?")
+    await asyncio.sleep(SETTLE)
+    assert [i for i in ec.view() if i.id == lunch.id][0].text == "lunch at noon?"
+    await erin.send(dave.ident.pubkey, "hacked", {"kind": "edit", "target": lunch.id})
+    await asyncio.sleep(SETTLE)
+    assert [i for i in dc.view() if i.id == lunch.id][0].text == "lunch at noon?", "only authors can edit"
+    print("   dave's edit shows up for erin; erin's attempt to edit dave's message is ignored")
+    await ec.run(f"/react {lunch.number} +1")  # same emoji again = take it back
+    await asyncio.sleep(SETTLE)
+    assert not [i for i in dc.view() if i.id == lunch.id][0].reactions
+    await dc.run(f"/delete {d_lunch.number}")
+    await asyncio.sleep(SETTLE)
+    gone = [i for i in ec.view() if i.id == lunch.id][0]
+    assert gone.deleted and gone.text == ""
+    print("   reacting twice undoes it; dave's delete removes the message for erin too")
+    reaction = next(m for m in erin.dms.messages(dave.ident.pubkey) if m.get("kind") == "react")
+    erin.dms.convos[dave.ident.pubkey].remove(reaction)
+    erin.dms._ids[dave.ident.pubkey].discard(reaction["id"])
+    assert await erin.sync_dm(dave.ident.pubkey) >= 1
+    assert any(m["id"] == reaction["id"] for m in erin.dms.messages(dave.ident.pubkey))
+    print("   a lost reaction comes back via chat sync (its extra fields still verify)")
+
+    step("replies, reactions and edits work in groups too")
+    gc = Commands(alice, lambda _: None)
+    gc.context = ("group", mixed.group_id)
+    await dave.send_group(mixed.group_id, "release on friday")
+    await asyncio.sleep(SETTLE)
+    rel = [i for i in gc.view() if i.text == "release on friday"][0]
+    await gc.run(f"/react {rel.number} party")
+    await gc.run(f"/reply {rel.number} ship it")
+    await asyncio.sleep(SETTLE)
+    ev = Commands(erin, lambda _: None).view(("group", mixed.group_id))
+    e_rel = [i for i in ev if i.id == rel.id][0]
+    assert e_rel.reactions == {"🎉": [alice.ident.pubkey]} and any(i.reply_to == rel.id for i in ev)
+    print("   alice's 🎉 and reply reached erin in the group")
+
     step("mallory forges a record claiming alice lives at mallory's address")
     mallory = Identity.generate()
     forged = Record(alice.ident.pubkey, "alice", ["127.0.0.1:6666"], alice.me.seq + 10**9)
