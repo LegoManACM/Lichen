@@ -973,6 +973,11 @@ class Node:
             raise ValueError("only the group owner can change the group")
         return group
 
+    async def _deliver_all(self, targets, msg: dict, item: str) -> None:
+        # One item id per recipient (`item:pubkey`, as the Android port does): the outbox is keyed by id,
+        # so a shared id would queue only the first absentee.
+        await asyncio.gather(*(self._deliver(pk, msg, f"{item}:{pk}") for pk in targets))
+
     async def _publish(self, name: str, members: list[str], prev: GroupRecord | None, settings: dict,
                        notify: list[str] | None = None) -> GroupRecord:
         others = sorted(set(members) - {self.ident.pubkey})
@@ -981,8 +986,7 @@ class Node:
         self.groups.merge(group)
         msg = {"type": "group_update", "group": group.to_dict()}
         targets = [pk for pk in (notify or group.members) if pk != self.ident.pubkey]
-        item = f"group_update:{group.group_id}:{group.seq}"
-        await asyncio.gather(*(self._deliver(pk, msg, item) for pk in targets))
+        await self._deliver_all(targets, msg, f"group_update:{group.group_id}:{group.seq}")
         return group
 
     async def create_group(self, name: str, members: list[str], history: str = "private") -> GroupRecord:
@@ -994,8 +998,7 @@ class Node:
         self.groups.set_status(group.group_id, "accepted")  # it's ours
         self.groups.merge(group)
         msg = {"type": "group_update", "group": group.to_dict()}
-        item = f"group_update:{group.group_id}:{group.seq}"
-        await asyncio.gather(*(self._deliver(pk, msg, item) for pk in others))
+        await self._deliver_all(others, msg, f"group_update:{group.group_id}:{group.seq}")
         return group
 
     async def accept_group(self, group_id: str) -> int:
@@ -1086,8 +1089,8 @@ class Node:
         self.log(f"{self._name(inner['from'])} made you the owner of #{group.name}")
         self._emit("group_owner", group=new, previous=inner["from"])
         msg = {"type": "group_update", "group": new.to_dict()}
-        item = f"group_update:{gid}:{new.seq}"
-        await asyncio.gather(*(self._deliver(pk, msg, item) for pk in set(group.members) - {self.ident.pubkey}))
+        await self._deliver_all([m for m in group.members if m != self.ident.pubkey], msg,
+                                f"group_update:{gid}:{new.seq}")
 
     def pending_groups(self) -> list[GroupRecord]:
         return [g for g in self.groups.all()

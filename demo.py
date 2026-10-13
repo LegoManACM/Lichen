@@ -406,6 +406,27 @@ async def main() -> None:
     assert inbox["ivy"].count("dave: nudged twice") == 1
     print("   two nudges, one message (outbox flushes are per-peer, and ids dedupe anyway)")
 
+    step("a group update while two members are away: each of them gets it when they're back")
+    away = await dave.create_group("away", [erin.ident.pubkey, ivy.ident.pubkey])
+    await asyncio.sleep(SETTLE)
+    await erin.accept_group(away.group_id)
+    await ivy.accept_group(away.group_id)
+    await erin.stop()
+    await ivy.stop()
+    await asyncio.sleep(SETTLE)
+    updated = await dave.set_history(away.group_id, "shared")
+    queued = sorted(i for i in dave.outbox.items if i.startswith(f"group_update:{away.group_id}:"))
+    assert queued == sorted(f"group_update:{away.group_id}:{updated.seq}:{pk}"
+                            for pk in (erin.ident.pubkey, ivy.ident.pubkey)), queued
+    erin = make("erin", 9181, [PHONEBOOK], relay=PHONEBOOK)
+    ivy = make("ivy", 0, [PHONEBOOK], relay=[PHONEBOOK, HUB2])
+    await erin.start()
+    await ivy.start()
+    assert await wait_until(lambda: erin.groups.get(away.group_id).seq == ivy.groups.get(away.group_id).seq
+                            == updated.seq, 10)
+    assert await wait_until(lambda: not any(i.startswith(f"group_update:{away.group_id}:") for i in dave.outbox.items))
+    print(f"   dave queued one update per member ({len(queued)} items); erin and ivy both got seq {updated.seq}")
+
     step("chat sync: a gap in a conversation heals, in order, without duplicates")
     convo = erin.dms.convos[dave.ident.pubkey]
     lost = convo.pop(1)
