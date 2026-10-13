@@ -101,6 +101,9 @@ class Node(
     /** Called for each relay client as it is created (before it has attached). */
     var onRelayClient: ((RelayClient) -> Unit)? = null
 
+    /** File offers and chunk requests (phase 3): set by the client; null = unsupported. */
+    @Volatile var files: FileHandler? = null
+
     private val flushing = ConcurrentHashMap.newKeySet<String>()
     private val owedSeen = ConcurrentHashMap<String, MutableSet<String>>()  // IOU item ids already reported, per sender
     private val lastSeen = ConcurrentHashMap<String, Double>()
@@ -208,7 +211,7 @@ class Node(
     }
 
     /** Send msg to whoever holds pubkey, looking up a fresher address if the known one is dead. */
-    private suspend fun requestPeer(pubkey: String, msg: JsonObject): JsonObject? {
+    internal suspend fun requestPeer(pubkey: String, msg: JsonObject): JsonObject? {
         val rec = phonebook.get(pubkey)
         val reply = if (rec != null) tryAddrs(rec, msg) else null
         if (reply != null) return reply
@@ -300,7 +303,7 @@ class Node(
     }
 
     /** Sign fields (plus a fresh message id), seal them to pubkey and deliver as [kind]. Returns (result, inner). */
-    private suspend fun sendSealed(kind: String, pubkey: String, fields: Map<String, kotlinx.serialization.json.JsonElement>, id: String? = null): Pair<String?, JsonObject> {
+    internal suspend fun sendSealed(kind: String, pubkey: String, fields: Map<String, kotlinx.serialization.json.JsonElement>, id: String? = null): Pair<String?, JsonObject> {
         val unsigned = JsonObject(mapOf(
             "from" to str(ident.pubkey), "to" to str(pubkey), "ts" to Canonical.now(),
             "id" to str(id ?: newMessageId()),
@@ -316,7 +319,7 @@ class Node(
     }
 
     /** Decrypt and verify a sealed request addressed to us; null if it isn't valid. */
-    private fun openSealedMsg(msg: JsonObject): JsonObject? {
+    internal fun openSealedMsg(msg: JsonObject): JsonObject? {
         val plain = openSealed(enc, msg["sealed"]) ?: return null
         val inner = parseObject(plain.toString(Charsets.UTF_8)) ?: return null
         val from = inner["from"].asString() ?: return null
@@ -350,7 +353,7 @@ class Node(
     // --- presence --------------------------------------------------------------------------------
     // TODO(phase 2): send typing/read signals, _presence_round (only the receiving side exists here).
 
-    private fun seen(pubkey: String) {
+    internal fun seen(pubkey: String) {
         val wasOnline = online(pubkey)
         lastSeen[pubkey] = Canonical.nowSeconds()
         if (!wasOnline && trust.trusted(pubkey)) onEvent?.invoke("presence", pubkey, 1)
@@ -553,6 +556,7 @@ class Node(
                 return OK
             }
         }
+        if (kind == "file_offer" || kind == "file_get") files?.let { return it.handle(kind, msg) }
         // TODO(phase 2): device_sync, vault_put, vault_get. (phase 3): group_*, file_offer, file_get, group_handoff, punch, forward.
         return failed("unknown type ${kind?.let { "'$it'" } ?: "None"}")
     }

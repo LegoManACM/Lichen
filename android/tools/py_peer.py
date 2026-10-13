@@ -16,6 +16,13 @@ Commands (one JSON object per line):
                                                       (as if it had been sent but never arrived: chat sync must find it)
   {"cmd": "forget", "who": "user"|"hub", "peer": PK}  drop that node's history with peer (in memory only)
   {"cmd": "sync", "who": "user"|"hub", "peer": PK}    run dm_sync with peer -> {"event": "synced", "n": gained}
+  {"cmd": "send_file", "from": "user"|"hub", "to": PK|[PK], "name": "x.bin", "size": N, "seed": S}
+                                                      write N deterministic bytes (random.Random(S)) and offer them
+                                                      -> {"event": "file_sent", "file_id", "sha256", "size", "delivered"}
+  {"cmd": "offers", "who": "user"|"hub"}              -> {"event": "offers", "incoming": {file_id: offer}, "outgoing": {...}}
+  {"cmd": "accept_file", "who": ..., "file_id": ID}   download an offer -> {"event": "file_downloaded", "saved": path|null, "sha256": ...}
+  {"cmd": "decline_file", "who": ..., "file_id": ID}  -> {"event": "ok"}
+  {"cmd": "file_limits", "who": ..., "max_mb": F, "auto_mb": F}   -> {"event": "ok"}
   {"cmd": "quit"}
 Events: {"event": "ready", ...whoami}, {"event": "message", "node": "user"|"hub", "from": PK, "text": ..., "id": ...}
 """
@@ -131,6 +138,32 @@ class Peer:
             emit(event="ok", cmd=kind)
         elif kind == "sync":
             emit(event="synced", n=await self._node(cmd.get("who", "user")).sync_dm(cmd["peer"]))
+        elif kind == "send_file":
+            import random
+            node = self._node(cmd.get("from", "user"))
+            path = self.dir / "outfiles" / cmd["name"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(random.Random(cmd.get("seed", 0)).randbytes(int(cmd["size"])))
+            to = [cmd["to"]] if isinstance(cmd["to"], str) else list(cmd["to"])
+            file_id, entry, delivered = await node.send_file(path, to, cmd.get("group"))
+            emit(event="file_sent", file_id=file_id, sha256=entry["sha256"], size=entry["size"], delivered=delivered)
+        elif kind == "offers":
+            node = self._node(cmd.get("who", "user"))
+            emit(event="offers", incoming=node.files.incoming, outgoing=node.files.outgoing)
+        elif kind == "accept_file":
+            from lichen.files import sha256_file
+            node = self._node(cmd.get("who", "user"))
+            saved = await node.download(cmd["file_id"])
+            emit(event="file_downloaded", saved=str(saved) if saved else None,
+                 sha256=sha256_file(saved) if saved else None, error=node.files.incoming[cmd["file_id"]].get("error"))
+        elif kind == "decline_file":
+            self._node(cmd.get("who", "user")).decline_file(cmd["file_id"])
+            emit(event="ok", cmd=kind)
+        elif kind == "file_limits":
+            node = self._node(cmd.get("who", "user"))
+            node.max_file_mb = cmd.get("max_mb", node.max_file_mb)
+            node.auto_download_mb = cmd.get("auto_mb", node.auto_download_mb)
+            emit(event="ok", cmd=kind)
         elif kind == "quit":
             return False
         else:

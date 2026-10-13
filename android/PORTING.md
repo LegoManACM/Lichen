@@ -95,3 +95,27 @@ Device id: own random id in `device` (never copied from an export). An imported 
 ## Phases 2 and 3 (later)
 2. Requests screen, read/delivered receipts, typing, presence, device sync (`device_sync`, vault).
 3. Groups, files, UDP hole punching.
+
+## Files (phase 3, DM case)
+
+Code: `store/FileStore.kt` (files.json, same format as Python), `node/Files.kt` (`FileService`: `file_offer` /
+`file_get` handling, `send`, `download`, `decline`, auto-download), `api/FilesApi.kt` (`ChatClient.files`).
+`Node` only has `var files: FileHandler?` and one dispatch line in `handle` for `file_offer` / `file_get`;
+`NodeClient` creates the `FileService` and calls `load()` / `attach(node)` / `detach()`.
+
+- Sent files are **copied into app storage** (`<data>/sent/<file_id>`, `Outgoing.path` points there) while the
+  offer is made, so `file_get` keeps working after the picker's access ends. Never deleted automatically.
+  Downloads: `<data>/partial/<id>.part`, then `<data>/downloads/<safe name>`.
+- Limits (`max_file_mb`, `auto_download_mb`) are in `<data>/filelimits.json` and `FilesApi.limits/setLimits`
+  (Python keeps them in lichen.yaml). Defaults 100 / 0. Auto-download needs `auto_download_mb > 0` (Python also
+  auto-downloads empty files at 0; we do not).
+- Offers from non-contacts are stored and shown in the chat with that person but only `trusted` senders notify
+  (`ClientEvent.FileOffer.trusted`). A stranger who only sends a file does not appear in the contacts list until
+  the Requests screen (phase 2) exists.
+- **Device sync**: `FileService.fileStore()` gives the `FileStore`; register `deviceState()` under `"files"` and call
+  `mergeDeviceState(state["files"])` (returns changed count), and set `fileStore().onChange` for "offers changed"
+  (not fired for download progress or merges). `refresh()` is called on merge via `onUpdate`.
+- **Groups hook**: a group file offer is `files.send(open, name, size, to = members minus us, group = groupId)`
+  (= `node.send_file(group=...)`; the caller checks membership). Incoming group offers are stored with `group` set
+  and listed in `files.transfers` with `FileTransfer.group != null`; the DM chat ignores those.
+- A download cancelled by `stop()` goes back to `pending` (resumable from the whole chunks already on disk).

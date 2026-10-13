@@ -88,6 +88,7 @@ class LichenService : Service() {
         s.launch {
             c.events.collect { e ->
                 if (e is ClientEvent.Incoming && Backend.currentChat.value != OpenChat(id, e.contact.pubkey)) notifyMessage(id, e)
+                if (e is ClientEvent.FileOffer && e.trusted && Backend.currentChat.value != OpenChat(id, e.transfer.from)) notifyOffer(id, e)
             }
         }
         return Running(c, job)
@@ -146,6 +147,20 @@ class LichenService : Service() {
             .setContentIntent(openIntent(profileId, e.contact.pubkey))
             .build()
         NotificationManagerCompat.from(this).notify("$profileId/${e.contact.pubkey}".hashCode(), n)
+    }
+
+    private fun notifyOffer(profileId: String, e: ClientEvent.FileOffer) {
+        if (!canNotify()) return
+        val text = "offered you ${e.transfer.name} (${dev.lichen.core.store.humanSize(e.transfer.size)})"
+        val n = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(e.senderName)
+            .setContentText(text)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setContentIntent(openIntent(profileId, e.transfer.from))
+            .build()
+        NotificationManagerCompat.from(this).notify("$profileId/file/${e.transfer.id}".hashCode(), n)
     }
 
     companion object {

@@ -53,6 +53,12 @@ sealed interface ClientEvent {
     data class Incoming(val contact: Contact, val message: ChatMessage) : ClientEvent
     /** Something worth a line in a log/snackbar ("Alice moved", "relay unreachable"). */
     data class Log(val text: String) : ClientEvent
+    /** Someone offered us a file (see [ChatClient.files]); [trusted] = from a contact, worth a notification. */
+    data class FileOffer(val transfer: FileTransfer, val senderName: String, val trusted: Boolean) : ClientEvent
+    /** A download finished and passed its hash check. */
+    data class FileDownloaded(val transfer: FileTransfer) : ClientEvent
+    /** A download failed (resumable: download again). */
+    data class FileFailed(val transfer: FileTransfer, val error: String) : ClientEvent
 }
 
 interface ChatClient {
@@ -63,6 +69,8 @@ interface ChatClient {
     /** Everyone in the phonebook except us (for starting a new chat), sorted by name. */
     val people: StateFlow<List<Contact>>
     val events: SharedFlow<ClientEvent>
+    /** File offers and transfers. */
+    val files: FilesApi
 
     /** Conversation with pubkey, oldest first. */
     fun messages(pubkey: String): StateFlow<List<ChatMessage>>

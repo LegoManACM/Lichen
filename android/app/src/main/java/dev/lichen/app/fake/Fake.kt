@@ -87,6 +87,7 @@ class FakeChatClient(private val settings: Settings, private val profileId: Stri
     override val contacts = MutableStateFlow<List<Contact>>(emptyList())
     override val people = MutableStateFlow<List<Contact>>(emptyList())
     override val events = MutableSharedFlow<ClientEvent>(extraBufferCapacity = 16)
+    override val files: dev.lichen.core.api.FilesApi = FakeFiles()
 
     override fun messages(pubkey: String): StateFlow<List<ChatMessage>> = flow(pubkey)
 

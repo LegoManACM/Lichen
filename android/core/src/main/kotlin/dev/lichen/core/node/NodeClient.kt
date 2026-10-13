@@ -7,6 +7,7 @@ import dev.lichen.core.api.ChatClient
 import dev.lichen.core.api.ChatMessage
 import dev.lichen.core.api.ClientEvent
 import dev.lichen.core.api.Contact
+import dev.lichen.core.api.FilesApi
 import dev.lichen.core.api.HubStatus
 import dev.lichen.core.api.MessageStatus
 import dev.lichen.core.api.Profile
@@ -78,6 +79,8 @@ class NodeClient(private val dataDir: File) : ChatClient {
     override val contacts: StateFlow<List<Contact>> = _contacts
     override val people: StateFlow<List<Contact>> = _people
     override val events: SharedFlow<ClientEvent> = _events
+    private val fileService = FileService(dataDir, { _events.tryEmit(it) })
+    override val files: FilesApi = fileService
 
     private val chats = ConcurrentHashMap<String, MutableStateFlow<List<ChatMessage>>>()
     private val unread = ConcurrentHashMap<String, Int>()
@@ -114,6 +117,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
         parseObject(File(dataDir, "unread.json").takeIf { it.exists() }?.readText(Charsets.UTF_8) ?: "{}")?.forEach { (k, v) ->
             v.asLong()?.takeIf { it > 0 }?.let { unread[k] = it.toInt() }
         }
+        fileService.load()
         val hook = { markDirty() }
         l.phonebook.onChange = hook; l.dms.onChange = hook; l.outbox.onChange = hook; l.trust.onChange = hook
         loaded = l
@@ -142,6 +146,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
                 })
             node = n
             runningNode = n
+            fileService.attach(n)
             // The hubs row follows each relay connection; online dots expire with time.
             n.onRelayClient = { c -> scope.launch { c.connected.collect { publishHubs(n) } } }
             scope.launch { while (true) { delay(15_000); markDirty() } }
@@ -154,6 +159,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
     override suspend fun stop() {
         lifecycle.withLock {
             runningNode = null
+            fileService.detach()
             node?.stop()
             node = null
             run?.cancel()
@@ -292,6 +298,7 @@ class NodeClient(private val dataDir: File) : ChatClient {
     private fun recompute() {
         val l = loaded ?: return
         val me = l.ident.pubkey
+        fileService.refresh()
         for ((pk, flow) in chats) flow.value = messagesOf(l, pk)
         val keys = (l.trust.keys("trusted") + l.dms.peers()).filter { it != me && !l.trust.blocked(it) }.distinct()
         _contacts.value = keys.map { contactFor(l, it) }
