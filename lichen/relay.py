@@ -13,8 +13,11 @@ leave requests) it records an IOU: "sender owes recipient item <id>", with a tim
 the recipient attaches, the hub tells it who owes it what and nudges each sender to deliver. Item ids
 let the recipient recognise the same IOU held by several hubs, and its stores drop duplicates.
 
+Several devices can share one identity (see devices.py): each attaches with its own device id, and
+the hub forwards to all of them, returning the first useful reply.
+
 Attached-connection messages (JSON lines or WebSocket text messages, see wire.py):
-  node  -> relay  {"type": "attach", "req": {"pubkey", "ts"}, "sig"}    then  {"ok": true}
+  node  -> relay  {"type": "attach", "req": {"pubkey", "ts", "device"}, "sig"}    then  {"ok": true}
   relay -> node   {"rid": n, "msg": {...}}
   node  -> relay  {"rid": n, "reply": {...}}
   node  -> relay  {"keepalive": ts}   every 25 s, so proxies don't close an idle connection
@@ -52,7 +55,7 @@ class RelayHub:
     def __init__(self, path: Path | None = None, log: Callable[[str], None] = lambda s: None):
         self.path = path
         self.log = log
-        self.attached: dict[str, _Attached] = {}
+        self.attached: dict[str, dict[str, _Attached]] = {}  # pubkey -> device id -> connection
         # recipient -> sender -> {"ts": last update, "items": [item ids]}
         self.ious: dict[str, dict[str, dict]] = {}
         if path and path.exists():
@@ -74,11 +77,13 @@ class RelayHub:
             await conn.send({"ok": False, "error": "bad attach"})
             return
 
+        device = str(req.get("device") or "default")
         att = _Attached(conn)
-        old = self.attached.get(pubkey)
+        devices = self.attached.setdefault(pubkey, {})
+        old = devices.get(device)
         if old:
-            old.conn.close()
-        self.attached[pubkey] = att
+            old.conn.close()  # the same device reconnecting
+        devices[device] = att
         await conn.send({"ok": True})
         self.log(f"relay: {pubkey[:8]} attached")
         self._spawn(self._redeem_ious(pubkey))
@@ -93,8 +98,11 @@ class RelayHub:
         except (OSError, ConnectionError, asyncio.IncompleteReadError, ValueError):
             pass
         finally:
-            if self.attached.get(pubkey) is att:
-                del self.attached[pubkey]
+            devices = self.attached.get(pubkey, {})
+            if devices.get(device) is att:
+                del devices[device]
+                if not devices:
+                    del self.attached[pubkey]
                 self.log(f"relay: {pubkey[:8]} detached")
             for fut in att.pending.values():
                 if not fut.done():
@@ -102,18 +110,20 @@ class RelayHub:
 
     def close(self) -> None:
         """Drop every attached connection (they reconnect elsewhere or later)."""
-        for att in list(self.attached.values()):
-            att.conn.close()
+        for devices in list(self.attached.values()):
+            for att in list(devices.values()):
+                att.conn.close()
         for task in list(self._tasks):
             task.cancel()
 
     async def forward(self, to: str, msg: dict, sender: str | None = None, item: str | None = None) -> dict:
-        att = self.attached.get(to)
-        if att:
-            reply = await self._push(att, msg)
-            if reply is not None:
+        devices = list(self.attached.get(to, {}).values())
+        if devices:
+            # Every device of theirs gets it; any one answering is enough.
+            replies = [r for r in await asyncio.gather(*(self._push(a, msg) for a in devices)) if r is not None]
+            if replies:
                 self.forwarded += 1
-                return reply
+                return next((r for r in replies if r.get("ok")), replies[0])
         if msg.get("type") in IOU_TYPES and sender and item:
             owed = self.ious.setdefault(to, {}).setdefault(sender, {"ts": 0, "items": []})
             if item not in owed["items"]:
@@ -141,8 +151,7 @@ class RelayHub:
             return
         self._save()
         self.log(f"relay: {pubkey[:8]} is back; nudging {len(owed)} sender(s)")
-        att = self.attached.get(pubkey)
-        if att:
+        for att in list(self.attached.get(pubkey, {}).values()):
             await self._push(att, {"type": "owed", "from": {s: o["items"] for s, o in owed.items()}})
         if self.nudge:
             await asyncio.gather(*(self.nudge(sender, pubkey) for sender in owed), return_exceptions=True)
@@ -172,9 +181,10 @@ class RelayClient:
     """Node side: keep an attached connection to a relay open, reconnecting when it drops."""
 
     def __init__(self, relay: str, ident: Identity, handler: Callable[[dict], Awaitable[dict]],
-                 log: Callable[[str], None] = lambda s: None):
+                 log: Callable[[str], None] = lambda s: None, device: str = "default"):
         self.relay = relay
         self.ident = ident
+        self.device = device
         self.handler = handler
         self.log = log
         self.connected = asyncio.Event()
@@ -211,7 +221,7 @@ class RelayClient:
         self._conn = conn
         keepalive = None
         try:
-            req = {"pubkey": self.ident.pubkey, "ts": time.time()}
+            req = {"pubkey": self.ident.pubkey, "ts": time.time(), "device": self.device}
             await conn.send({"type": "attach", "req": req, "sig": self.ident.sign(canonical(req))})
             ack = await asyncio.wait_for(conn.recv(), 10) or {}
             if not ack.get("ok"):

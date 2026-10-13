@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import config, keyfile
+from . import config, devices, keyfile
 from .commands import Commands
 from .files import DEFAULT_MAX_MB, human_size
 from .identity import short
@@ -30,6 +30,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="write a commented starter config (default lichen.yaml) and exit")
     p.add_argument("--passphrase", dest="set_passphrase", action="store_true",
                    help="set, change or remove the passphrase protecting your key files, then exit")
+    p.add_argument("--export", metavar="FILE", default=None,
+                   help="write your identity (keys, contacts, groups, chats) to FILE, encrypted, for another device")
+    p.add_argument("--import", dest="import_file", metavar="FILE", default=None,
+                   help="set up this device as you, from a file made with --export")
     for key, (kind, help_) in config.OPTIONS.items():
         flag = "--" + key.replace("_", "-")
         if kind is list:
@@ -63,6 +67,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     cfg = argparse.Namespace(**{key: settings.get(key) for key in config.OPTIONS})
     cfg.config_path = path
     cfg.set_passphrase = args.set_passphrase
+    cfg.export = args.export
+    cfg.import_file = args.import_file
     cfg.port = cfg.port or 9000
     cfg.bootstrap = list(cfg.bootstrap or [])
     cfg.relay = list(cfg.relay or [])
@@ -115,6 +121,32 @@ def set_passphrase(args) -> None:
     except keyfile.WrongPassphrase:
         raise SystemExit("wrong current passphrase; nothing changed")
     print("passphrase set: you'll be asked for it at startup" if new else "passphrase removed")
+
+
+def export_identity(args) -> None:
+    folder = data_dir(args)
+    key_pass = unlock(args)
+    print("Choose a passphrase for the export. Anyone with the file AND this passphrase can be you.")
+    passphrase = getpass.getpass("export passphrase: ")
+    if not passphrase or getpass.getpass("repeat: ") != passphrase:
+        raise SystemExit("passphrases empty or didn't match; nothing written")
+    try:
+        devices.export_identity(folder, Path(args.export), passphrase, key_pass)
+    except ValueError as e:
+        raise SystemExit(f"error: {e}")
+    print(f"wrote {args.export}. On the other device: lichen --import {Path(args.export).name}")
+
+
+def import_identity(args) -> None:
+    folder = data_dir(args)
+    passphrase = getpass.getpass(f"passphrase for {args.import_file}: ")
+    keep = input("protect the keys on this device with the same passphrase? [Y/n] ").strip().lower() != "n"
+    try:
+        devices.import_identity(Path(args.import_file), folder, passphrase, passphrase if keep else None)
+    except ValueError as e:
+        raise SystemExit(f"error: {e}")
+    print(f"this device is now you (data in {folder}). Use the same hubs (relay) as your other device, "
+          "then run lichen; your chats fill in from the people you talk to.")
 
 
 def make_node(args, **callbacks) -> Node:
@@ -185,6 +217,12 @@ def main(argv=None) -> None:
     args = parse_args(argv)
     if args.set_passphrase:
         set_passphrase(args)
+        return
+    if args.export:
+        export_identity(args)
+        return
+    if args.import_file:
+        import_identity(args)
         return
     args.passphrase = unlock(args)  # before the full-screen UI takes over the terminal
     ui = (args.ui or "auto").lower()

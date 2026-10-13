@@ -15,7 +15,7 @@ from pathlib import Path
 
 from lichen.crypto import encrypt
 from lichen.files import CHUNK
-from lichen import keyfile
+from lichen import devices, keyfile
 from lichen.commands import Commands
 from lichen.groups import GroupRecord
 from lichen.identity import Identity, canonical, safety_code
@@ -529,6 +529,50 @@ async def main() -> None:
     await ivy.start()
     assert await wait_until(lambda: dave.message_status(ivy.ident.pubkey, waiting) == "delivered")
     print("   ivy offline: '...' waiting; she comes back and it turns into a delivered tick")
+
+    step("multiple devices: erin exports her identity and sets up a laptop")
+    export = tmp / "erin.lichen"
+    devices.export_identity(tmp / "erin", export, "carry me over")
+    assert "lichen-identity-v1:" in export.read_text() and "pineapple" not in export.read_text()
+    try:
+        devices.import_identity(export, tmp / "erin-laptop", "wrong passphrase")
+        raise AssertionError("imported with the wrong passphrase")
+    except ValueError:
+        pass
+    devices.import_identity(export, tmp / "erin-laptop", "carry me over")
+    try:
+        devices.import_identity(export, tmp / "erin", "carry me over")
+        raise AssertionError("overwrote an existing identity")
+    except ValueError:
+        pass
+    laptop_inbox = []
+    laptop = Node.from_dir(tmp / "erin-laptop", "erin", port=0, bootstrap=[PHONEBOOK], relay=[PHONEBOOK, HUB2],
+                           direct=False, stun=[], on_message=lambda r, t, e: laptop_inbox.append(t))
+    await laptop.start()
+    await asyncio.sleep(SETTLE)
+    assert laptop.ident.pubkey == erin.ident.pubkey and laptop.device != erin.device
+    assert len(pb.hub.attached[erin.ident.pubkey]) == 2, "the hub holds both of erin's devices"
+    assert any(m["text"] == "hi erin, via the relay" for m in laptop.dms.messages(dave.ident.pubkey))
+    assert laptop.groups.joined(mixed.group_id)
+    print(f"   same key, devices {erin.device} and {laptop.device}; the laptop came with erin's chats and groups")
+    assert set(erin.me.addrs) == set(laptop.me.addrs) == {f"relay:{PHONEBOOK}", f"relay:{HUB2}"}
+    seq = erin.me.seq
+    await asyncio.sleep(1.0)
+    assert erin.me.seq == seq, "devices settle on one record (no re-announce ping-pong)"
+    print(f"   the devices merged their addresses: {sorted(erin.me.addrs)}")
+
+    step("multiple devices: messages reach both; what one misses, sync fills in")
+    dave.udp.drop_path(erin.ident.pubkey)
+    dave._punch_failed[erin.ident.pubkey] = time.time()  # force the relay route for this check
+    assert await dave.send(erin.ident.pubkey, "to all your devices") == "delivered"
+    assert await wait_until(lambda: "to all your devices" in laptop_inbox)
+    assert inbox["erin"][-1] == "dave: to all your devices"
+    print("   via the hub, dave's message arrived on both of erin's devices")
+    assert await laptop.send(dave.ident.pubkey, "sent from my laptop") == "delivered"
+    assert await erin.sync_dm(dave.ident.pubkey) >= 1
+    assert any(m["text"] == "sent from my laptop" for m in erin.dms.messages(dave.ident.pubkey))
+    print("   what erin sent from her laptop shows up on her other device after a chat sync")
+    await laptop.stop()
 
     step("mallory forges a record claiming alice lives at mallory's address")
     mallory = Identity.generate()

@@ -291,6 +291,29 @@ These are **signals**: sealed like messages, but never stored, synced or queued,
 between contacts, so strangers can't tell when you're around or what you've read. Receipts and typing
 are for direct messages only (in groups they'd be noise).
 
+## Using Lichen on more than one device
+
+```powershell
+lichen --export me.lichen      # on the device you already use (asks for a passphrase for the file)
+lichen --import me.lichen      # on the new device, then run lichen as usual
+```
+
+The export holds your keys, contacts (with nicknames and verifications), groups (with their keys and
+history), chats and phonebook, encrypted with the passphrase you choose. **Anyone with the file and
+its passphrase can be you**, so treat it like a password and delete it once you've imported it.
+
+After that both devices are you, at once:
+
+- Each device attaches to your hubs with its own device id, and hubs deliver to **all** of them.
+- If your devices use different hubs, they notice each other in the phonebook and advertise the
+  combined addresses, so people can reach whichever one is up.
+- Anything a device misses (it was off, or a message went over a direct path to the other one) is
+  filled in by chat and group sync from the people you talk to, including messages you sent from
+  the other device. A new device also syncs with all your contacts on first start.
+
+Not synced between your own devices (yet): trust changes, nicknames and accepted invites made after
+the export, and files you've downloaded.
+
 ## Trust, requests and invites
 
 Every key is **trusted** (a contact), **unknown**, or **blocked** (`trust.json`):

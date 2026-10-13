@@ -447,6 +447,7 @@ class Commands:
             out(f"{node.name} at {', '.join(node.addrs)}{f' ({status})' if status else ''}")
             out(f"  your key: {node.ident.pubkey}")
             out(f"  fingerprint: {fingerprint(node.ident.pubkey)}  (people can compare this to check it's really you)")
+            out(f"  this device: {node.device}  (lichen --export FILE to set up another device as you)")
             if node.outbox.items:
                 out(f"  {len(node.outbox.items)} item(s) waiting for their recipients to come online")
             if node.udp.public:

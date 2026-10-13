@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Callable
 
 from .crypto import EncKey, open_sealed, seal
+from .devices import device_id
 from .dms import DmStore, legacy_id
 from .files import DEFAULT_MAX_MB, FileStore, human_size
 from .groups import HISTORY_MODES, GroupRecord, GroupStore, transfer_body
@@ -100,6 +101,7 @@ class Node:
         hub: RelayHub | None = None,
         dms: DmStore | None = None,
         outbox: Outbox | None = None,
+        device: str = "default",
         trust: TrustStore | None = None,
         files: FileStore | None = None,
         max_file_mb: float = DEFAULT_MAX_MB,
@@ -126,6 +128,8 @@ class Node:
         self.hub = hub or RelayHub(log=log)
         self.dms = dms or DmStore()
         self.outbox = outbox or Outbox()
+        self.device = device  # this device's id; several devices can share one identity (devices.py)
+        self.device_addrs: list[str] = []  # addresses our other devices advertise, adopted into our record
         self.hub.nudge = self._nudge
         self.trust = trust or TrustStore()
         self.files = files or FileStore(None)
@@ -163,6 +167,7 @@ class Node:
         return cls(name, ident, enc, Phonebook(data_dir / "phonebook.json"),
                    GroupStore(ident, enc, data_dir / "groups.json"), hub=hub,
                    dms=DmStore(data_dir / "dms.json"), outbox=Outbox(data_dir / "outbox.json"),
+                   device=device_id(data_dir),
                    trust=TrustStore(data_dir / "trust.json"),
                    files=FileStore(data_dir, downloads), **kw)
 
@@ -176,7 +181,8 @@ class Node:
 
     @property
     def addrs(self) -> list[str]:
-        return ([self.addr] if self.direct else []) + [RELAY_PREFIX + r for r in self.relays]
+        own = ([self.addr] if self.direct else []) + [RELAY_PREFIX + r for r in self.relays]
+        return own + [a for a in self.device_addrs if a not in own]
 
     @property
     def relay(self) -> str | None:
@@ -200,7 +206,7 @@ class Node:
         await self.udp.open(self.udp_bind, self.port if self.direct else 0)
         self._refresh_record()
         for relay in self.relays:
-            client = RelayClient(relay, self.ident, lambda m: self.handle(_clean(m)), log=self.log)
+            client = RelayClient(relay, self.ident, lambda m: self.handle(_clean(m)), log=self.log, device=self.device)
             client.start()
             self.relay_clients.append(client)
 
@@ -424,7 +430,9 @@ class Node:
     async def _gossip(self, rec: Record, exclude: set[str]) -> None:
         """Flood rec to every peer we know (plus bootstrap nodes). Dedup happens on receipt via seq."""
         msg = {"type": "announce", "record": rec.to_dict(), "from": self.ident.pubkey}
-        targets = self._peer_targets(exclude | {self.ident.pubkey, rec.pubkey})
+        # The record's owner is included on purpose: their *other* devices need to hear it (the one that
+        # announced just ignores its own copy, since it isn't newer).
+        targets = self._peer_targets(exclude | {self.ident.pubkey})
         await asyncio.gather(*(self._req(a, pk, msg) for a, pk in targets))
 
     async def refresh(self, pubkey: str) -> Record | None:
@@ -608,8 +616,23 @@ class Node:
         return new
 
     async def sync_dms(self) -> int:
-        peers = [pk for pk in self.dms.convos if not self.trust.blocked(pk)]
+        """Fill gaps in every chat, and pull chats from contacts we have no history with yet (a new
+        device starts with your contacts but none of the conversation)."""
+        contacts = {pk for pk, lv in self.trust.levels.items() if lv == "trusted"}
+        peers = [pk for pk in set(self.dms.convos) | contacts if not self.trust.blocked(pk) and pk != self.ident.pubkey]
         return sum(await asyncio.gather(*(self.sync_dm(pk) for pk in peers)))
+
+    def _adopt_device_addrs(self, rec: Record) -> None:
+        """Another device of ours published our record: keep its addresses in ours too, so people can
+        reach whichever device is up. Re-announce only if that added something (no ping-pong)."""
+        extra = [a for a in rec.addrs if a not in self.addrs]
+        if extra:
+            self.device_addrs += extra
+            self.log(f"another device of yours is at {', '.join(extra)}")
+        missing = [a for a in self.addrs if a not in rec.addrs]  # their record dropped some of ours
+        if extra or missing:
+            self._refresh_record()
+            self._spawn(self.announce())
 
     async def _peer_online(self, pubkey: str) -> None:
         """They're reachable again: deliver what we owe them and fill gaps in our chat."""
@@ -896,7 +919,10 @@ class Node:
         kind = msg.get("type")
         if kind == "hello":
             rec = Record.from_dict(msg.get("record") or {})
-            if self.phonebook.merge(rec):
+            if rec and rec.pubkey == self.ident.pubkey:
+                if self.phonebook.merge(rec):
+                    self._adopt_device_addrs(rec)
+            elif self.phonebook.merge(rec):
                 self.log(f"met {rec.name} ({short(rec.pubkey)}) at {', '.join(rec.addrs)}")
                 self._spawn(self._gossip(rec, exclude=set()))
                 self._spawn(self._peer_online(rec.pubkey))
@@ -904,7 +930,10 @@ class Node:
 
         if kind == "announce":
             rec = Record.from_dict(msg.get("record") or {})
-            if self.phonebook.merge(rec):
+            if rec and rec.pubkey == self.ident.pubkey:
+                if self.phonebook.merge(rec):
+                    self._adopt_device_addrs(rec)
+            elif self.phonebook.merge(rec):
                 self.log(f"{rec.name} ({short(rec.pubkey)}) is now at {', '.join(rec.addrs)}")
                 self._spawn(self._gossip(rec, exclude={str(msg.get("from"))}))
                 self._spawn(self._peer_online(rec.pubkey))  # a fresh record means they're (back) online
