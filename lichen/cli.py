@@ -1,9 +1,9 @@
 """Interactive chat client.
 
-Hub with an open port:        python -m torrentchat --name hub --host <public ip> --bind 0.0.0.0
-Hub behind Cloudflare Tunnel: python -m torrentchat --name hub --url wss://chat.example.com
-Everyone else:                python -m torrentchat --name alice --relay <hub address>
-Or put the options in torrentchat.yaml and just run: python -m torrentchat   (see config.py, --init)
+Hub with an open port:        python -m lichen --name hub --host <public ip> --bind 0.0.0.0
+Hub behind Cloudflare Tunnel: python -m lichen --name hub --url wss://chat.example.com
+Everyone else:                python -m lichen --name alice --relay <hub address>
+Or put the options in lichen.yaml and just run: python -m lichen   (see config.py, --init)
 """
 
 import argparse
@@ -20,12 +20,12 @@ from .node import Node
 
 
 def parse_args(argv=None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="torrentchat", description="Decentralized encrypted chat",
+    p = argparse.ArgumentParser(prog="lichen", description="Decentralized encrypted chat",
                                 epilog="Options can also come from a YAML/JSON config file; flags override it.")
     p.add_argument("--config", "-c", type=Path, default=None,
                    help=f"config file (default: {' / '.join(config.DEFAULT_FILES)} in the current folder, if present)")
-    p.add_argument("--init", nargs="?", const="torrentchat.yaml", default=None, metavar="FILE",
-                   help="write a commented starter config (default torrentchat.yaml) and exit")
+    p.add_argument("--init", nargs="?", const="lichen.yaml", default=None, metavar="FILE",
+                   help="write a commented starter config (default lichen.yaml) and exit")
     for key, (kind, help_) in config.OPTIONS.items():
         flag = "--" + key.replace("_", "-")
         if kind is list:
@@ -40,7 +40,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                                   (args.relay or ["chat.example.com:9000"])[0])
         except config.ConfigError as e:
             p.exit(1, f"{e}\n")
-        p.exit(0, f"wrote {args.init}; edit it, then run: python -m torrentchat"
+        p.exit(0, f"wrote {args.init}; edit it, then run: lichen"
                   f"{'' if args.init in config.DEFAULT_FILES else ' --config ' + args.init}\n")
 
     path = args.config or config.find_default()

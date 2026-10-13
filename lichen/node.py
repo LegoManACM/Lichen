@@ -1,4 +1,4 @@
-"""A TorrentChat node. Every node is also a phonebook and a relay; a "phonebook server" is just an
+"""A Lichen node. Every node is also a phonebook and a relay; a "phonebook server" is just an
 always-on node at a public address (HOST:PORT, or a ws(s):// URL behind Cloudflare Tunnel etc.).
 
 Protocol (one JSON request per connection, over TCP or WebSocket; see wire.py):

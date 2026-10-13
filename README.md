@@ -1,4 +1,4 @@
-# TorrentChat
+# Lichen
 
 Prototype of a decentralized, end-to-end encrypted chat where everyone keeps a phonebook of everyone else.
 
@@ -19,14 +19,26 @@ Prototype of a decentralized, end-to-end encrypted chat where everyone keeps a p
   record and retries.
 - **Everything is end-to-end encrypted.** Relays and phonebooks only see ciphertext and who it's for.
 
-## Setup
+## Install
+
+Needs Python 3.11+. Straight from GitHub:
+
+```powershell
+pip install git+https://github.com/LegoManACM/Lichen
+lichen --init     # writes a starter lichen.yaml; put your name and your hub in it
+lichen            # run it
+```
+
+(`python -m lichen` works too.)
+
+### From a checkout (for hacking on it)
 
 PowerShell (Windows):
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1          # once per terminal; prompt shows (.venv)
-python -m pip install -r requirements.txt
+python -m pip install -e .            # editable install: gives you the `lichen` command
 ```
 
 If activation says scripts are disabled: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
@@ -37,7 +49,7 @@ All commands below assume the venv is active.
 
 Run it in a normal terminal and you get a full-screen app:
 
-![TorrentChat terminal UI](docs/tui-screenshot.svg)
+![Lichen terminal UI](docs/tui-screenshot.svg)
 
 - **Sidebar:** your contacts (plus strangers who wrote to you, marked `?`) and groups (invites marked
   `✉ … (invite)`). `●` green = direct peer-to-peer path, `●` cyan = they accept connections directly
@@ -67,9 +79,9 @@ an interactive terminal and the plain prompt when input is piped (scripts, tests
 Every option can live in a YAML or JSON file, so day to day you just run:
 
 ```powershell
-python -m torrentchat                        # uses torrentchat.yaml / .yml / .json in this folder
-python -m torrentchat --config hub.yaml      # or a specific file
-python -m torrentchat --init                 # writes a commented starter torrentchat.yaml
+lichen                        # uses lichen.yaml / .yml / .json in this folder
+lichen --config hub.yaml      # or a specific file
+lichen --init                 # writes a commented starter lichen.yaml
 ```
 
 Flags on the command line override the file. Options (same names as the flags):
@@ -107,9 +119,9 @@ python demo.py
 Interactive on one PC, one terminal each:
 
 ```powershell
-python -m torrentchat --name hub --port 9000
-python -m torrentchat --name alice --relay 127.0.0.1:9000
-python -m torrentchat --name bob --relay ws://127.0.0.1:9000
+lichen --name hub --port 9000
+lichen --name alice --relay 127.0.0.1:9000
+lichen --name bob --relay ws://127.0.0.1:9000
 ```
 
 (The hub accepts both raw TCP and WebSocket on the same port, so alice and bob can mix.)
@@ -133,13 +145,13 @@ The hub stays on `localhost`; `cloudflared` carries WebSocket traffic to it.
 
 ```powershell
 cloudflared tunnel login
-cloudflared tunnel create torrentchat
-cloudflared tunnel route dns torrentchat chat.example.com
-cloudflared tunnel run --url http://localhost:9000 torrentchat
+cloudflared tunnel create lichen
+cloudflared tunnel route dns lichen chat.example.com
+cloudflared tunnel run --url http://localhost:9000 lichen
 ```
 
 ```yaml
-# hub.yaml   ->  python -m torrentchat --config hub.yaml
+# hub.yaml   ->  lichen --config hub.yaml
 name: hub
 port: 9000
 url: wss://chat.example.com
@@ -196,7 +208,7 @@ hosted. Actually *any* node that joins two hubs bridges them.
 
 ## Direct connections (hole punching)
 
-Most people are behind a router (NAT) that blocks incoming connections. TorrentChat gets around it
+Most people are behind a router (NAT) that blocks incoming connections. Lichen gets around it
 the same way Tailscale and WebRTC do, with the hub only as an introducer:
 
 1. Each node learns its public UDP address (the IP:port its router maps its socket to): from its hub's

@@ -1,5 +1,5 @@
 # A hub on a machine with a public IP, or a home PC with port 9000 forwarded (TCP *and* UDP).
-#   python -m torrentchat --config examples/hub-open-port.yaml
+#   lichen --config examples/hub-open-port.yaml
 name: hub
 
 port: 9000

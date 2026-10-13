@@ -33,7 +33,7 @@ MARKERS = {
 LINK_TEXT = {"direct": "direct (peer to peer)", "open": "direct (open port)", "relay": "via relay"}
 CONSOLE = ("console", "")
 REQUESTS = ("requests", "")
-WELCOME = """Welcome to TorrentChat! This is the console: run commands here, no slash needed.
+WELCOME = """Welcome to Lichen! This is the console: run commands here, no slash needed.
   help                         list every command
   peers                        who's in your phonebook
   msg alice hi                 start a conversation (that makes alice a contact)
@@ -152,7 +152,7 @@ class FilePicker(ModalScreen[Path | None]):
 
 
 class ChatApp(App):
-    TITLE = "TorrentChat"
+    TITLE = "Lichen"
     CSS = """
     #sidebar { width: 32; border-right: solid $primary-background-lighten-2; }
     .section { padding: 0 1; text-style: bold; color: $accent; }

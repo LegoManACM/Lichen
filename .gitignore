@@ -3,6 +3,9 @@ data/
 __pycache__/
 *.pyc
 # personal configs (your name, your hubs); see examples/ for templates
-torrentchat.yaml
-torrentchat.yml
-torrentchat.json
+lichen.yaml
+lichen.yml
+lichen.json
+build/
+dist/
+*.egg-info/

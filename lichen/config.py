@@ -1,8 +1,8 @@
 """Config files: every command-line option can live in a YAML or JSON file instead.
 
-    python -m torrentchat                     uses ./torrentchat.yaml (or .yml / .json) if present
-    python -m torrentchat --config me.yaml    uses me.yaml
-    python -m torrentchat --init              writes a commented starter torrentchat.yaml
+    python -m lichen                     uses ./lichen.yaml (or .yml / .json) if present
+    python -m lichen --config me.yaml    uses me.yaml
+    python -m lichen --init              writes a commented starter lichen.yaml
 
 Options given on the command line override the file.
 """
@@ -10,7 +10,7 @@ Options given on the command line override the file.
 import json
 from pathlib import Path
 
-DEFAULT_FILES = ("torrentchat.yaml", "torrentchat.yml", "torrentchat.json")
+DEFAULT_FILES = ("lichen.yaml", "lichen.yml", "lichen.json")
 
 # option -> (type, help). The CLI builds its flags from this too, so the two can't drift apart.
 OPTIONS: dict[str, tuple[type, str]] = {
@@ -35,7 +35,7 @@ OPTIONS: dict[str, tuple[type, str]] = {
 }
 
 TEMPLATE = """\
-# TorrentChat config. Run with:  python -m torrentchat   (or --config this-file.yaml)
+# Lichen config. Run with:  lichen   (or: lichen --config this-file.yaml)
 # Anything here can also be given as a command-line flag, which wins over the file.
 
 name: {name}
@@ -66,7 +66,7 @@ relay: {relay}
 #   - stun.cloudflare.com:3478
 # data: data/{name}          # where your keys, phonebook and messages are stored
 # ui: auto                   # tui, cli, or auto (tui in a real terminal)
-# downloads: ~/Downloads/torrentchat   # where accepted files go
+# downloads: ~/Downloads/lichen   # where accepted files go
 # max_file_mb: 100           # refuse bigger offers
 # auto_download_mb: 0        # >0: auto-accept files up to this size from your contacts
 """

@@ -1,5 +1,5 @@
 # Joining someone's hub. Works behind any home router / mobile data; nothing to configure.
-#   python -m torrentchat --config examples/friend.yaml
+#   lichen --config examples/friend.yaml
 name: alex
 
 # The hub's address, whichever form its owner gave you:

@@ -27,7 +27,7 @@ DEFAULT_MAX_MB = 100
 
 
 def file_aad(file_id: str, offset: int) -> bytes:
-    return f"torrentchat-file:{file_id}:{offset}".encode()
+    return f"lichen-file:{file_id}:{offset}".encode()
 
 
 def sha256_file(path: Path) -> str:

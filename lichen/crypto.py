@@ -39,7 +39,7 @@ class EncKey:
 
 
 def _box_key(shared: bytes, epk: bytes, rpk: bytes) -> bytes:
-    return HKDF(hashes.SHA256(), 32, salt=None, info=b"torrentchat-seal-v1" + epk + rpk).derive(shared)
+    return HKDF(hashes.SHA256(), 32, salt=None, info=b"lichen-seal-v1" + epk + rpk).derive(shared)
 
 
 def seal(recipient_pub: str, plaintext: bytes) -> dict:

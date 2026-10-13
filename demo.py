@@ -12,13 +12,13 @@ import os
 import tempfile
 from pathlib import Path
 
-from torrentchat.crypto import encrypt
-from torrentchat.files import CHUNK
-from torrentchat.groups import GroupRecord
-from torrentchat.identity import Identity, canonical
-from torrentchat.node import Node
-from torrentchat.records import Record
-from torrentchat.wire import request
+from lichen.crypto import encrypt
+from lichen.files import CHUNK
+from lichen.groups import GroupRecord
+from lichen.identity import Identity, canonical
+from lichen.node import Node
+from lichen.records import Record
+from lichen.wire import request
 
 PHONEBOOK = "127.0.0.1:9100"
 HUB2 = "127.0.0.1:9200"
@@ -40,7 +40,7 @@ def step(text: str) -> None:
 
 
 async def main() -> None:
-    tmp = Path(tempfile.mkdtemp(prefix="torrentchat-"))
+    tmp = Path(tempfile.mkdtemp(prefix="lichen-"))
     inbox: dict[str, list[str]] = {}
     group_inbox: dict[str, list[tuple[str, bool]]] = {}
 
@@ -139,7 +139,7 @@ async def main() -> None:
     inner = {"group": gid, "from": bob.ident.pubkey, "ts": 0, "nonce": "x", "text": "sneaky", "private": False}
     inner["sig"] = bob.ident.sign(canonical(inner))
     box = encrypt(bob.groups.keys[gid][old_epoch], canonical(inner), canonical({"group": gid, "epoch": old_epoch}))
-    from torrentchat.groups import _msg_id
+    from lichen.groups import _msg_id
     sneaky = {"type": "group_msg", "group": devs.to_dict(),
               "envelope": {"group": gid, "epoch": old_epoch, **box, "id": _msg_id(box["ct"])}}
     reply = await request(carol.addr, sneaky)
