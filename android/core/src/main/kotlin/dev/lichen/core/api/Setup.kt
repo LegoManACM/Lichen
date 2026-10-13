@@ -38,6 +38,12 @@ interface LichenSetup {
      */
     fun import(dataDir: File, exportText: String, passphrase: String): SetupResult
 
+    /**
+     * The text of an export file (what `lichen --export` writes) for the identity in [dataDir], with its name and
+     * hubs in the bundled lichen.yaml. Throws IllegalArgumentException for an empty passphrase or no identity.
+     */
+    fun export(dataDir: File, passphrase: String): String = throw UnsupportedOperationException("export isn't available here")
+
     /** A client for an existing data folder. Not started. */
     fun open(dataDir: File): ChatClient
 }

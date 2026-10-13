@@ -148,6 +148,37 @@ print(Identity.load_or_create(d / "key").pubkey, EncKey.load_or_create(d / "enck
         assertIs<SetupResult.Failed>(setup.import(d, ex["text"].str(), ex["passphrase"].str()))
     }
 
+    @Test fun `an export round trips through import, name and hubs included`() {
+        val a = File(tmpDir(), "a")
+        setup.create(a, Settings("Sam's phone", listOf("wss://h.example.com", "hub:9000")))
+        val pk = Identity.loadOrCreate(File(a, "key")).pubkey
+        val text = setup.export(a, "pw")
+        assertTrue(text.startsWith(EXPORT_PREFIX))
+        assertFalse(isLinked(a))  // the app marks it once the file is saved
+        val b = File(tmpDir(), "b")
+        val r = assertIs<SetupResult.Ok>(setup.import(b, text, "pw"))
+        assertEquals(Settings("Sam's phone", listOf("wss://h.example.com", "hub:9000")), r.settings)
+        assertEquals(pk, Identity.loadOrCreate(File(b, "key")).pubkey)
+        assertIs<SetupResult.Failed>(setup.import(File(tmpDir(), "c"), text, "wrong"))
+        assertFailsWith<IllegalArgumentException> { setup.export(a, "") }
+    }
+
+    @Test fun `Python opens a Kotlin export`() {
+        Py.require()
+        val a = File(tmpDir(), "a")
+        setup.create(a, Settings("Zoë \"Z\" O'Neil", listOf("wss://h.example.com")))
+        val f = File(tmpDir(), "me.lichen").apply { writeText(setup.export(a, "päss")) }
+        val out = Py.run("""
+from pathlib import Path
+import yaml
+from lichen.devices import open_export
+b = open_export(Path(sys.stdin.read().strip()), "päss")
+c = yaml.safe_load(b["config"])
+print(sorted(b["keys"]), c["relay"])
+""", f.absolutePath)
+        assertEquals("['enckey', 'key'] ['wss://h.example.com']", out.trim())
+    }
+
     @Test fun `yaml reader handles scalars, flow and block lists, quotes and comments`() {
         val y = parseLichenYaml(
             "# top comment\nname: \"Bob # not a comment\"   # trailing\nrelay:\n  - wss://a.example.com  # one\n  - 'b.example.org:9000'\nport: 9000\n")

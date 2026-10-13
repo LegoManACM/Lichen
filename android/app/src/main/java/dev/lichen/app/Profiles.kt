@@ -3,11 +3,13 @@ package dev.lichen.app
 import dev.lichen.core.api.ChatClient
 import dev.lichen.core.api.LichenSetup
 import dev.lichen.core.api.Settings
+import dev.lichen.core.markLinked
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.OutputStream
 
 data class ProfileInfo(val id: String, val name: String, val linked: Boolean)
 
@@ -70,6 +72,17 @@ class Profiles(root: File, private val setup: LichenSetup) {
         _clients.value[id]?.let { runCatching { it.stop() } }
         store.delete(id)
         forget(id)
+    }
+
+    /**
+     * Write profile [id]'s identity export (see [LichenSetup.export]) to [out]. Its folder is then marked linked:
+     * there is (or soon will be) another device with this identity.
+     */
+    suspend fun export(id: String, passphrase: String, out: OutputStream) = withContext(Dispatchers.IO) {
+        val text = setup.export(store.dir(id), passphrase)
+        out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+        markLinked(store.dir(id))
+        reload()
     }
 
     /** New name/hubs for a profile: stop its client, save, open a fresh one (the service starts it). */

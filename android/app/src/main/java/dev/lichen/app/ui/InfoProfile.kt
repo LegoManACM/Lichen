@@ -15,7 +15,14 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -155,6 +162,7 @@ private fun StrangersSection(current: Strangers, onChange: (Strangers) -> Unit) 
 fun ProfileScreen(
     client: ChatClient, onBack: (() -> Unit)?, onSaveHubs: (name: String, hubs: List<String>) -> Unit,
     onDelete: () -> Unit, onDebugLog: () -> Unit = {}, onColors: () -> Unit = {}, onSwitchProfile: (() -> Unit)? = null,
+    onExport: (suspend (passphrase: String, out: java.io.OutputStream) -> Unit)? = null,
 ) {
     val p = Slab.colors
     val profile by client.profile.collectAsState()
@@ -243,7 +251,92 @@ fun ProfileScreen(
                 Text("ADVANCED · DEBUG LOG", fontFamily = Slab.mono, fontSize = 11.sp, letterSpacing = 0.12.em, color = p.muted)
             }
 
+            if (onExport != null) ExportSection(pr.name, onExport)
+
             SlabButton("Delete this profile", onDelete, Modifier.fillMaxWidth(), SlabButtonStyle.Danger)
+        }
+    }
+}
+
+/**
+ * "Export this profile": a dialog that explains what the file is and takes the passphrase twice, then the
+ * system's save picker. The outcome shows under the button.
+ */
+@Composable
+private fun ExportSection(name: String, onExport: suspend (passphrase: String, out: java.io.OutputStream) -> Unit) {
+    val p = Slab.colors
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var asking by remember { mutableStateOf(false) }
+    var pass by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<Pair<String, Boolean>?>(null) }  // text, is an error
+    val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val secret = pass
+        pass = ""
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        scope.launch {
+            note = try {
+                onExport(secret, ctx.contentResolver.openOutputStream(uri, "wt") ?: error("couldn't open that file"))
+                "Saved. On the other device, choose Import an export file and enter the same passphrase." to false
+            } catch (e: Exception) {
+                "Couldn't export: ${e.message ?: "unknown error"}" to true
+            }
+            busy = false
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SlabButton(
+            if (busy) "Exporting…" else "Export this profile", { note = null; asking = true }, Modifier.fillMaxWidth(),
+            SlabButtonStyle.Secondary, enabled = !busy, icon = SlabIcons.Upload,
+        )
+        note?.let { (text, bad) ->
+            Text(text, fontSize = 13.sp, lineHeight = 18.sp, color = if (bad) MaterialTheme.colorScheme.error else p.subtle)
+        }
+    }
+    if (asking) ExportDialog(name, onDismiss = { asking = false }) { chosen ->
+        asking = false
+        pass = chosen
+        saver.launch("${name.trim().replace(Regex("[^\\p{L}\\p{N} _-]"), "").ifBlank { "me" }}.lichen")
+    }
+}
+
+@Composable
+private fun ExportDialog(name: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    val p = Slab.colors
+    var pass by remember { mutableStateOf("") }
+    var again by remember { mutableStateOf("") }
+    val mismatch = again.isNotEmpty() && again != pass
+    Dialog(onDismissRequest = onDismiss) {
+        SlabCard(Modifier.fillMaxWidth().padding(end = 6.dp), border = p.alert, shadow = p.bar, shadowOffset = 6.dp) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Export \"$name\"?", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = p.text)
+                Text(
+                    "The export file holds this identity: its keys, contacts and chats. Anyone with the file and its " +
+                        "passphrase can read your messages and speak as you, so choose a strong passphrase and keep the file safe.",
+                    fontSize = 14.sp, color = p.subtle, lineHeight = 20.sp,
+                )
+                val field = Modifier.fillMaxWidth()
+                OutlinedTextField(
+                    pass, { pass = it }, field, label = { Text("Passphrase") }, singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), colors = slabFieldColors(),
+                )
+                OutlinedTextField(
+                    again, { again = it }, field, label = { Text("Passphrase again") }, singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), colors = slabFieldColors(),
+                    isError = mismatch, supportingText = if (mismatch) ({ Text("These don't match") }) else null,
+                )
+                Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SlabButton("Cancel", onDismiss, Modifier.weight(1f), SlabButtonStyle.Secondary)
+                    SlabButton(
+                        "Export", { onConfirm(pass) }, Modifier.weight(1f),
+                        enabled = pass.isNotEmpty() && pass == again,
+                    )
+                }
+            }
         }
     }
 }

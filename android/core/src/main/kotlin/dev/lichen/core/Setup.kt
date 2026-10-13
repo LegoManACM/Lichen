@@ -61,6 +61,9 @@ open class FileSetup(private val logSink: (String) -> Unit = {}) : LichenSetup {
         }
     }
 
+    override fun export(dataDir: File, passphrase: String): String =
+        exportIdentity(dataDir, passphrase, settings(dataDir)?.let { lichenYaml(it.name, it.hubs) })
+
     override fun open(dataDir: File): ChatClient = dev.lichen.core.node.NodeClient(dataDir, logSink)
 }
 

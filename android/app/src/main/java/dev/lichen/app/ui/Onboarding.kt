@@ -70,16 +70,16 @@ private fun Welcome(onCancel: (() -> Unit)?, choose: (String) -> Unit) {
     SlabCard(Modifier.fillMaxWidth().padding(end = 4.dp)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SectionLabel("ALREADY USE LICHEN")
-            Text("I use Lichen on my computer", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = p.text)
-            Text("Bring your identity, contacts and chats over to this phone.", fontSize = 14.sp, color = p.subtle)
-            SlabButton("Import from my computer", { choose("import") }, Modifier.fillMaxWidth().padding(top = 4.dp))
+            Text("I use Lichen somewhere else", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = p.text)
+            Text("Bring your identity, contacts and chats over from another device.", fontSize = 14.sp, color = p.subtle)
+            SlabButton("Import an export file", { choose("import") }, Modifier.fillMaxWidth().padding(top = 4.dp))
         }
     }
     SlabCard(Modifier.fillMaxWidth().padding(end = 4.dp)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SectionLabel("NEW HERE")
             Text("New identity", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = p.text)
-            Text("I'm new here. Make me a fresh identity on this phone.", fontSize = 14.sp, color = p.subtle)
+            Text("Create a fresh identity.", fontSize = 14.sp, color = p.subtle)
             SlabButton("Start fresh", { choose("new") }, Modifier.fillMaxWidth().padding(top = 4.dp), SlabButtonStyle.Secondary)
         }
     }
@@ -118,10 +118,10 @@ private fun ImportForm(dataDir: java.io.File, onBack: () -> Unit, onDone: () -> 
         }
     }
 
-    Back(onBack, "Import from my computer")
+    Back(onBack, "Import an export file")
     Text(
         "An export is one file that holds your identity (your keys, name and hubs), protected by a passphrase. " +
-            "On your computer run:",
+            "In Lichen on your phone, use Settings › Export this profile. On a computer, run:",
         fontSize = 14.sp, lineHeight = 20.sp, color = Slab.colors.subtle,
     )
     Text(
@@ -129,11 +129,11 @@ private fun ImportForm(dataDir: java.io.File, onBack: () -> Unit, onDone: () -> 
         fontFamily = Slab.mono, fontSize = 14.sp, color = Slab.colors.accent,
     )
     Text(
-        "Then copy me.lichen to this phone (cloud drive, USB cable, or a messenger to yourself) and pick it here.",
+        "Then copy the file to this phone (cloud drive, USB cable, or a messenger to yourself) and pick it here.",
         fontSize = 14.sp, lineHeight = 20.sp, color = Slab.colors.subtle,
     )
     SlabButton(
-        if (uri == null) "Choose me.lichen" else "Chosen: $fileName", { picker.launch(arrayOf("*/*")) },
+        if (uri == null) "Choose the export file" else "Chosen: $fileName", { picker.launch(arrayOf("*/*")) },
         Modifier.fillMaxWidth(), SlabButtonStyle.Card, enabled = !busy,
     )
     OutlinedTextField(

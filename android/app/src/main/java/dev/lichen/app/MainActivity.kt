@@ -159,7 +159,8 @@ private fun LichenApp() {
         Box(Modifier.weight(1f).then(if (nav) Modifier.consumeWindowInsets(WindowInsets.navigationBars) else Modifier)) {
             key(id) { Screen(c, id, top, stack.size == 1, infos, ::push, ::pop, ::openTab, onSetStack = { stack = it },
                 onSwitcher = { switcher = true }, onDeleting = { deleting = it }, onSwitch = ::switchTo, onAdd = ::startAdd,
-                onSaveSettings = { s -> scope.launch { profiles.saveSettings(id, s) } }, clients = clients) }
+                onSaveSettings = { s -> scope.launch { profiles.saveSettings(id, s) } }, clients = clients,
+                onExport = { pass, out -> profiles.export(id, pass, out) }) }
         }
         if (nav) SlabNav(
             selected = tab, requests = requests.size, onChats = { openTab(null) }, onRequests = { openTab("requests") },
@@ -181,6 +182,7 @@ private fun Screen(
     push: (String) -> Unit, pop: () -> Unit, openTab: (String?) -> Unit, onSetStack: (ArrayList<String>) -> Unit,
     onSwitcher: () -> Unit, onDeleting: (ProfileInfo?) -> Unit, onSwitch: (String) -> Unit, onAdd: () -> Unit,
     onSaveSettings: (Settings) -> Unit, clients: Map<String, ChatClient>,
+    onExport: suspend (passphrase: String, out: java.io.OutputStream) -> Unit,
 ) {
     when {
         top == "manage" -> ManageProfilesScreen(
@@ -206,7 +208,7 @@ private fun Screen(
             val strangers = c.profile.value?.strangers ?: Strangers.REQUESTS
             onSaveSettings(Settings(name, hubs, strangers))
         }, onDelete = { onDeleting(infos.firstOrNull { it.id == id }) }, onDebugLog = { push("debuglog") },
-            onColors = { push("colors") }, onSwitchProfile = onSwitcher)
+            onColors = { push("colors") }, onSwitchProfile = onSwitcher, onExport = onExport)
         else -> ContactsScreen(
             c, infos.firstOrNull { it.id == id }?.name ?: "Lichen", id, onSwitcher = onSwitcher,
             onOpenChat = { push("chat:$it") }, onNewChat = { push("people") },
