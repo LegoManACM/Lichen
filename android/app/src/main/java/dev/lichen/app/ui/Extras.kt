@@ -21,7 +21,7 @@ import kotlinx.coroutines.launch
 
 /** Strangers who wrote to us: tap one to read it, or accept / block right here. */
 @Composable
-fun RequestsScreen(client: ChatClient, onBack: () -> Unit, onOpenChat: (String) -> Unit) {
+fun RequestsScreen(client: ChatClient, onBack: (() -> Unit)?, onOpenChat: (String) -> Unit) {
     val p = Slab.colors
     val requests by client.requests.collectAsState()
     val scope = rememberCoroutineScope()

@@ -153,7 +153,7 @@ private fun StrangersSection(current: Strangers, onChange: (Strangers) -> Unit) 
  */
 @Composable
 fun ProfileScreen(
-    client: ChatClient, onBack: () -> Unit, onSaveHubs: (name: String, hubs: List<String>) -> Unit,
+    client: ChatClient, onBack: (() -> Unit)?, onSaveHubs: (name: String, hubs: List<String>) -> Unit,
     onDelete: () -> Unit, onDebugLog: () -> Unit = {}, onColors: () -> Unit = {}, onSwitchProfile: (() -> Unit)? = null,
 ) {
     val p = Slab.colors
@@ -225,7 +225,7 @@ fun ProfileScreen(
                     SectionLabel("THIS DEVICE")
                     Text(pr.device, fontFamily = Slab.mono, fontSize = 13.sp, color = p.text)
                     Text(
-                        "Sync now retries anything waiting to be sent and catches up on chats from your other devices.",
+                        "Sync retries anything waiting to be sent and catches up on chats from your other devices.",
                         fontSize = 13.sp, color = p.muted, lineHeight = 18.sp,
                     )
                     SlabButton(

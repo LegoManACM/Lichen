@@ -71,7 +71,7 @@ fun HubChip(hubs: List<HubStatus>) {
 @Composable
 fun ContactsScreen(
     client: ChatClient, profileName: String, profileId: String, onSwitcher: () -> Unit,
-    onOpenChat: (String) -> Unit, onNewChat: () -> Unit, onProfile: () -> Unit, onRequests: () -> Unit = {},
+    onOpenChat: (String) -> Unit, onNewChat: () -> Unit, onRequests: () -> Unit = {},
     onOpenGroup: (String) -> Unit = {}, onNewGroup: () -> Unit = {},
 ) {
     val p = Slab.colors
@@ -90,9 +90,6 @@ fun ContactsScreen(
                 HubChip(hubs)
                 ProfileTitle(profileName, profileId, onSwitcher)
             })
-        },
-        bottomBar = {
-            SlabNav(selected = 0, requests = requests.size, onChats = {}, onRequests = onRequests, onSettings = onProfile)
         },
         floatingActionButton = { AddMenu(onAddSomeone = onNewChat, onNewGroup = onNewGroup) },
     ) { pad ->
@@ -337,7 +334,6 @@ fun PeopleScreen(client: ChatClient, onBack: () -> Unit, onOpenChat: (String) ->
                         Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        Text("Have them scan this. That's it.", fontSize = 15.sp, color = p.subtle, textAlign = TextAlign.Center)
                         KeyQr(m.pubkey)
                         Column(
                             Modifier.padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally,
@@ -377,17 +373,16 @@ fun PeopleScreen(client: ChatClient, onBack: () -> Unit, onOpenChat: (String) ->
                             keyText, { keyText = it }, Modifier.fillMaxWidth(), placeholder = { Text("Their key") },
                             colors = slabFieldColors(), textStyle = LocalTextStyle.current.copy(fontFamily = Slab.mono, fontSize = 14.sp),
                             isError = keyText.isNotBlank() && (key == null || mine),
-                            supportingText = {
+                            supportingText = if (keyText.isBlank()) null else ({
                                 val (label, color) = when {
-                                    keyText.isBlank() -> "THE KEY THEY COPIED OR SHARED" to p.muted
                                     key == null -> "NOT A LICHEN KEY" to MaterialTheme.colorScheme.error
                                     mine -> "THAT'S YOUR OWN KEY" to MaterialTheme.colorScheme.error
                                     else -> "KEY ${fingerprint(key)}" to p.accent
                                 }
                                 Text(label, fontFamily = Slab.mono, fontSize = 10.sp, letterSpacing = 0.1.em, color = color)
-                            },
+                            }),
                         )
-                        SlabButton("Add and say hello", {
+                        SlabButton("Add Contact", {
                             val k = key ?: return@SlabButton
                             scope.launch { client.setTrust(k, Trust.TRUSTED); onOpenChat(k) }
                         }, Modifier.fillMaxWidth(), enabled = key != null && !mine, height = 52.dp, shadow = 4.dp)
