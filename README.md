@@ -264,6 +264,23 @@ Every key is **trusted** (a contact), **unknown**, or **blocked** (`trust.json`)
   sends the owner a signed leave request, and the owner's node removes you (rotating the group key).
 - Pending invites, requests, offers and trust levels are saved, so nothing is lost across restarts.
 
+### Hosting a group: handing it over or deleting it
+
+The person who created a group is its **host**: only they can invite, remove, or change settings. The
+host can't just leave; `/group leave GROUP` tells them to pick one of:
+
+- **`/group leave GROUP NAME`**: hand the group to another member and leave. (`/group transfer GROUP
+  NAME` hands it over but stays a member.) The host signs "the owner is now NAME" and sends NAME a sealed
+  hand-over with the group's key history (needed to give future members the right keys). NAME's node
+  then republishes the group as host with a fresh key, minus the old host if they left. If NAME is
+  offline, the hand-over waits in the outbox like anything else.
+- **`/group delete GROUP`**: a final signed "deleted" update; members' nodes forget the group's
+  messages and keys (best effort: an honest client deletes, a modified one could keep a copy).
+
+Ownership is verifiable by anyone: the group id is derived from the founder's key, and the record
+carries the chain of hand-overs, each signed by the previous host. A member who joins long after a
+hand-over can still check it, and nobody can claim a group they weren't handed.
+
 ## File sharing
 
 `/send NAME PATH` (or `/send #group PATH`, or Ctrl+F / drag-and-drop in the TUI) offers a file:
@@ -373,8 +390,8 @@ Over UDP, every request above can also travel on a punched path. Datagrams are J
   very large catch-up syncs over lossy links.
 - Group catch-up only happens on startup and `/sync`, not continuously.
 - Removing a member also drops their old messages from catch-up for anyone who syncs later.
-- Only the owner can change a group, and only from the device with their key; if they disappear,
-  the group can't change membership any more.
+- Only the host can change a group, from the device with their key. They can hand it over, but if
+  they vanish without doing so, the group can't change membership any more.
 - Groups saved by versions before encryption are ignored (contacts are kept).
 - Join times come from the owner's clock and message times from the author's; a big clock difference
   only matters for which ciphertexts are offered during catch-up, not what can be decrypted.

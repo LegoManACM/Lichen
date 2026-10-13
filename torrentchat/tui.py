@@ -473,8 +473,9 @@ class ChatApp(App):
             if g:
                 names = ", ".join(self._who(m) for m in g.members)
                 state = " · invite" if self.node.groups.status.get(ident) == "pending" else ""
+                host = "you" if g.owner == self.node.ident.pubkey else self._who(g.owner)
                 title.update(f"{escape(self._convo_name(self.current))}  [dim]· {len(g.members)} members "
-                             f"({escape(names)}) · history {g.history}{state}[/]{busy}")
+                             f"({escape(names)}) · host {escape(host)} · history {g.history}{state}[/]{busy}")
 
     # --- incoming ----------------------------------------------------------------------------------
 
@@ -524,6 +525,13 @@ class ChatApp(App):
                 self.notify(f"saved {o['name']} to {d['saved']}", title="Download complete", timeout=6)
             else:
                 self.notify(f"{o['name']}: {d['error']}", title="Download failed", severity="error", timeout=8)
+        elif kind == "group_owner":
+            self.notify(f"{self._who(d['previous'])} made you the host of #{d['group'].name}", title="Group")
+        elif kind == "group_deleted":
+            g = d["group"]
+            self.notify(f"{self._who(g.owner)} deleted #{g.name}", title="Group", timeout=6)
+            if self.current == ("group", g.group_id):
+                self.open(CONSOLE)
         elif kind == "owed":
             self.to_console(f"[dim]{escape(self._who(d['sender']))} has {d['count']} thing(s) for you; "
                             f"they'll arrive when {escape(self._who(d['sender']))} is online[/]")

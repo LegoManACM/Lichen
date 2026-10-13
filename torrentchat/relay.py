@@ -29,7 +29,7 @@ from typing import Awaitable, Callable
 from .identity import Identity, canonical, verify
 from .wire import Conn, connect
 
-IOU_TYPES = {"msg", "group_update", "group_leave", "file_offer"}  # group messages catch up via sync
+IOU_TYPES = {"msg", "group_update", "group_leave", "file_offer", "group_handoff"}  # group messages catch up via sync
 IOU_MAX_AGE = 30 * 24 * 3600
 IOU_LIMIT = 200  # item ids remembered per (sender, recipient) pair
 FORWARD_TIMEOUT = 10.0

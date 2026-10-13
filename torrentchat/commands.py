@@ -55,7 +55,11 @@ GROUP_SUBS = {
                    ("text", "peer*")),
     "add": Spec("add", "GROUP PEER", "invite someone (owner only)", ("group", "peer")),
     "remove": Spec("remove", "GROUP PEER", "remove a member (owner only)", ("group", "peer")),
-    "leave": Spec("leave", "GROUP", "leave a group (the owner's node removes you)", ("group",)),
+    "leave": Spec("leave", "GROUP [NEW-OWNER]", "leave a group (the owner's node removes you); if you're "
+                  "the host, name a member to hand it to", ("group", "member")),
+    "transfer": Spec("transfer", "GROUP NEW-OWNER", "make another member the host (you stay a member)",
+                     ("group", "member")),
+    "delete": Spec("delete", "GROUP", "delete a group you host, for everyone", ("group",)),
     "history": Spec("history", "GROUP private|shared",
                     "change the history setting (owner only); applies to messages sent from now on",
                     ("group", "mode")),
@@ -109,6 +113,16 @@ class Commands:
             self.out(f"  {'no' if not matches else 'ambiguous'} match for {query!r}; use a key prefix from /peers")
             return None
         return matches[0]
+
+    def member(self, g: GroupRecord, query: str) -> Record | None:
+        """A member of g by name or key prefix (resolved among the group's members only)."""
+        q = query.lower()
+        matches = [m for m in g.members if m != self.node.ident.pubkey
+                   and (self.name_of(m).lower() == q or m.lower().startswith(q))]
+        if len(matches) != 1:
+            self.out(f"  {'no member' if not matches else 'several members'} matching {query!r} in #{g.name}")
+            return None
+        return self.node.phonebook.get(matches[0]) or Record(matches[0], self.name_of(matches[0]), [], 0)
 
     def group(self, query: str) -> GroupRecord | None:
         matches = self.node.groups.find(query)
@@ -171,9 +185,12 @@ class Commands:
 
     # --- completion --------------------------------------------------------------------------------
 
-    def _candidates(self, kind: str) -> list[str]:
+    def _candidates(self, kind: str, tokens: list[str] | None = None) -> list[str]:
         kind = kind.rstrip("*")
         node = self.node
+        if kind == "member":  # other members of the group named earlier on the line (/group sub GROUP ...)
+            g = next((g for g in node.groups.all() if tokens and len(tokens) > 2 and g.name == tokens[2]), None)
+            return sorted({self.name_of(m) for m in g.members if m != node.ident.pubkey}, key=str.lower) if g else []
         if kind == "peer":
             names = {r.name for r in node.phonebook.all() if r.pubkey != node.ident.pubkey}
             return sorted(names, key=str.lower)
@@ -249,7 +266,7 @@ class Commands:
         if kind == "path*":  # paths can contain spaces: complete everything after the target
             rest = self._complete_path(" ".join(tokens[2:]))
             return value + rest if rest else None
-        options = self._candidates(kind) + (["--shared"] if kind == "peer*" and "--shared" not in tokens else [])
+        options = self._candidates(kind, tokens) + (["--shared"] if kind == "peer*" and "--shared" not in tokens else [])
         used = {t.lower() for t in tokens[1:-1]}
         for option in options:
             if option.lower().startswith(partial.lower()) and option.lower() not in used:
@@ -281,10 +298,11 @@ class Commands:
         kind = self._arg_kind(tokens)
         if kind == "path*":
             return usage + "\nTab completes file and folder names"
-        options = self._candidates(kind) if kind and kind != "groupsub" else []
+        options = self._candidates(kind, tokens) if kind and kind != "groupsub" else []
         if options:
             label = {"peer": "people", "contact": "contacts", "blocked": "blocked", "group": "groups",
-                     "mode": "options", "target": "contacts / groups", "pending": "waiting"}[kind.rstrip("*")]
+                     "mode": "options", "target": "contacts / groups", "pending": "waiting",
+                     "member": "members"}[kind.rstrip("*")]
             shown = ", ".join(options[:12]) + (" …" if len(options) > 12 else "")
             usage += f"\n{label}: {shown}"
         return usage
@@ -347,6 +365,17 @@ class Commands:
                     if g := self.group(args[0]):
                         await node.leave_group(g.group_id)
                         out(f"  left #{g.name}")
+                elif sub in ("leave", "transfer") and len(args) == 2:
+                    if (g := self.group(args[0])) and (r := self.member(g, args[1])):
+                        result = await node.transfer_group(g.group_id, r.pubkey, leave=sub == "leave")
+                        done = "left it" if sub == "leave" else "you're still a member"
+                        out(f"  handed #{g.name} to {r.name}; {done}" if result == "delivered" else
+                            f"  {r.name} is offline: they'll take over #{g.name} when you're both online"
+                            if result == "waiting" else f"  couldn't reach {r.name}")
+                elif sub == "delete" and len(args) == 1:
+                    if g := self.group(args[0]):
+                        await node.delete_group(g.group_id)
+                        out(f"  deleted #{g.name} for everyone")
                 else:
                     out(HELP)
             except ValueError as e:

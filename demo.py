@@ -14,6 +14,7 @@ from pathlib import Path
 
 from torrentchat.crypto import encrypt
 from torrentchat.files import CHUNK
+from torrentchat.groups import GroupRecord
 from torrentchat.identity import Identity, canonical
 from torrentchat.node import Node
 from torrentchat.records import Record
@@ -248,6 +249,7 @@ async def main() -> None:
     print("   hank <-> dave went direct; the websocket hub only introduced them")
 
     step("group invites: nothing shows until you accept; declining removes you")
+    mal_key = Identity.generate()
     club = await alice.create_group("club", [carol.ident.pubkey, bob.ident.pubkey])
     await asyncio.sleep(SETTLE)
     before = len(group_inbox.get("carol", []))
@@ -267,6 +269,46 @@ async def main() -> None:
     assert bob.ident.pubkey not in alice.groups.get(club.group_id).members, "owner removes a decliner"
     assert bob.ident.pubkey not in carol.groups.get(club.group_id).members
     print("   bob declined; alice's node removed him and rotated the key")
+
+    step("the host can't just leave: they hand the group to a successor (or delete it)")
+    try:
+        await alice.leave_group(club.group_id)
+        raise AssertionError("the host shouldn't be able to just walk away")
+    except ValueError as e:
+        print(f"   alice: {e}")
+    assert await alice.transfer_group(club.group_id, carol.ident.pubkey, leave=True) == "delivered"
+    assert await wait_until(lambda: carol.groups.get(club.group_id).owner == carol.ident.pubkey)
+    await asyncio.sleep(SETTLE)
+    rec = carol.groups.get(club.group_id)
+    assert alice.ident.pubkey not in rec.members and rec.transfers[0]["to"] == carol.ident.pubkey
+    assert alice.groups.get(club.group_id).owner == carol.ident.pubkey, "alice saw the hand-over too"
+    assert GroupRecord.from_dict(rec.to_dict()), "anyone can verify the ownership chain from scratch"
+    forged = rec.to_dict()
+    forged["transfers"] = [{**forged["transfers"][0], "to": mal_key.pubkey}]
+    assert GroupRecord.from_dict(forged) is None, "a tampered chain is rejected"
+    try:
+        await alice.add_member(club.group_id, bob.ident.pubkey)
+        raise AssertionError("the old host can't manage it any more")
+    except ValueError:
+        pass
+    print("   carol is the host now; alice is out; the chain verifies and can't be forged")
+    await carol.add_member(club.group_id, pb.ident.pubkey)
+    await asyncio.sleep(SETTLE)
+    await pb.accept_group(club.group_id)
+    await carol.send_group(club.group_id, "new management")
+    assert await wait_until(lambda: any(m["text"] == "new management" for m in pb.groups.messages(club.group_id)))
+    assert pb.groups.messages(club.group_id)[-1]["text"] == "new management"
+    print("   the new host can invite people and the group carries on")
+    await carol.delete_group(club.group_id)
+    await asyncio.sleep(SETTLE)
+    assert not pb.groups.joined(club.group_id) and not pb.groups.messages(club.group_id)
+    assert pb.groups.status[club.group_id] == "deleted" and not carol.groups.messages(club.group_id)
+    print("   carol deleted it: members' copies of the messages and keys are gone")
+    solo = await alice.create_group("solo", [])
+    try:
+        await alice.leave_group(solo.group_id)
+    except ValueError as e:
+        print(f"   alice (only member of #solo): {e}")
 
     step("trust: strangers' messages are requests; blocked senders are dropped")
     mal = make("mal", 9190, [PHONEBOOK], relay=PHONEBOOK)

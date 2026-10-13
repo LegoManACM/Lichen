@@ -44,21 +44,49 @@ class GroupRecord:
     epoch: int
     keybox: dict[str, dict]  # member pubkey -> sealed {epoch: key}
     sig: str = field(default="", repr=False)
+    # Ownership can be handed over. The group id stays hash(founder, nonce); each transfer is
+    # {"to": new owner, "sig": previous owner's signature over transfer_body(...)}. Both fields are
+    # left out of the signed body while there are no transfers, so older records still verify.
+    founder: str | None = None
+    transfers: list[dict] = field(default_factory=list)
 
     def body(self) -> dict:
-        return {"group_id": self.group_id, "nonce": self.nonce, "name": self.name, "owner": self.owner,
+        body = {"group_id": self.group_id, "nonce": self.nonce, "name": self.name, "owner": self.owner,
                 "members": self.members, "seq": self.seq, "settings": self.settings, "joined": self.joined,
                 "epoch": self.epoch, "keybox": self.keybox}
+        if self.transfers:
+            body["founder"] = self.founder
+            body["transfers"] = self.transfers
+        return body
 
     @property
     def history(self) -> str:
         return self.settings.get("history", "private")
 
+    @property
+    def deleted(self) -> bool:
+        return bool(self.settings.get("deleted"))
+
+    @property
+    def founder_key(self) -> str:
+        return self.founder or self.owner
+
     def joined_at(self, pubkey: str) -> float:
         return self.joined.get(pubkey, float("inf"))
 
+    def chain_ok(self) -> bool:
+        """Each transfer is signed by the owner before it, starting from the founder, ending at owner."""
+        prev = self.founder_key
+        for i, t in enumerate(self.transfers):
+            if not isinstance(t, dict) or not verify(prev, transfer_body(self.group_id, str(t.get("to")), i),
+                                                     str(t.get("sig"))):
+                return False
+            prev = str(t["to"])
+        return prev == self.owner
+
     def valid(self) -> bool:
-        return self.group_id == group_id_for(self.owner, self.nonce) and verify(self.owner, canonical(self.body()), self.sig)
+        return (self.group_id == group_id_for(self.founder_key, self.nonce) and self.chain_ok()
+                and verify(self.owner, canonical(self.body()), self.sig))
 
     def to_dict(self) -> dict:
         return {**self.body(), "sig": self.sig}
@@ -69,10 +97,17 @@ class GroupRecord:
             rec = cls(str(d["group_id"]), str(d["nonce"]), str(d["name"]), str(d["owner"]),
                       [str(m) for m in d["members"]], int(d["seq"]), dict(d["settings"]),
                       {str(k): float(v) for k, v in d["joined"].items()}, int(d["epoch"]),
-                      {str(k): dict(v) for k, v in d["keybox"].items()}, str(d["sig"]))
+                      {str(k): dict(v) for k, v in d["keybox"].items()}, str(d["sig"]),
+                      str(d["founder"]) if d.get("founder") else None,
+                      [dict(t) for t in d.get("transfers") or []])
         except (KeyError, TypeError, ValueError, AttributeError):
             return None
         return rec if rec.valid() else None
+
+
+def transfer_body(group_id: str, to: str, index: int) -> bytes:
+    """What an owner signs to hand group_id to `to` (index = position in the ownership chain)."""
+    return canonical({"type": "group_transfer", "group": group_id, "to": to, "n": index})
 
 
 def _aad(group_id: str, epoch: int) -> bytes:
@@ -134,14 +169,25 @@ class GroupStore:
         self.save()
         return True
 
+    def purge(self, group_id: str, status: str = "deleted") -> None:
+        """Forget a group's messages and keys (the record stays, so later updates are recognised)."""
+        self.logs[group_id] = {}
+        self.keys[group_id] = {}
+        self.epochs[group_id] = {}
+        self.status[group_id] = status
+        self.save()
+
     def build_record(self, name: str, members: list[str], enc_keys: dict[str, str],
-                     prev: GroupRecord | None, settings: dict) -> GroupRecord:
+                     prev: GroupRecord | None, settings: dict, transfer: dict | None = None) -> GroupRecord:
         """Owner side: the next version of a group (or a new one), with a fresh epoch key sealed to
-        every member. enc_keys maps each other member's pubkey to their X25519 key."""
+        every member. enc_keys maps each other member's pubkey to their X25519 key. `transfer` is the
+        previous owner's signed hand-over when we're taking the group over."""
         now = time.time()
         me = self.ident.pubkey
         nonce = prev.nonce if prev else b64(os.urandom(12))
-        gid = group_id_for(me, nonce)
+        founder = prev.founder_key if prev else me
+        transfers = (list(prev.transfers) if prev else []) + ([transfer] if transfer else [])
+        gid = group_id_for(founder, nonce)
         member_list = sorted(set(members) | {me})
         joined = {m: (prev.joined[m] if prev and m in prev.joined else now) for m in member_list}
         epoch = (prev.epoch if prev else 0) + 1
@@ -154,12 +200,15 @@ class GroupStore:
         for m in member_list:
             if m == me:
                 continue
-            entitled = {e: k for e, k in keys.items()
-                        if epochs[e]["start"] >= joined[m] or (settings["history"] == "shared" and epochs[e]["mode"] == "shared")}
+            # Epochs we hold a key for but no metadata (shouldn't happen after a proper hand-over) are
+            # only shared with nobody: better to withhold history than to leak it.
+            entitled = {e: k for e, k in keys.items() if e in epochs and (
+                epochs[e]["start"] >= joined[m] or (settings["history"] == "shared" and epochs[e]["mode"] == "shared"))}
             keybox[m] = seal(enc_keys[m], json.dumps({e: b64(k) for e, k in entitled.items()}).encode())
 
         seq = max(time.time_ns() // 1000, (prev.seq if prev else 0) + 1)
-        rec = GroupRecord(gid, nonce, name, me, member_list, seq, dict(settings), joined, epoch, keybox)
+        rec = GroupRecord(gid, nonce, name, me, member_list, seq, dict(settings), joined, epoch, keybox,
+                          founder=founder if transfers else None, transfers=transfers)
         rec.sig = self.ident.sign(canonical(rec.body()))
         return rec
 

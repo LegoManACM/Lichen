@@ -46,8 +46,8 @@ from typing import Callable
 from .crypto import EncKey, open_sealed, seal
 from .dms import DmStore, legacy_id
 from .files import DEFAULT_MAX_MB, FileStore, human_size
-from .groups import HISTORY_MODES, GroupRecord, GroupStore
-from .identity import Identity, b64, canonical, short, verify
+from .groups import HISTORY_MODES, GroupRecord, GroupStore, transfer_body
+from .identity import Identity, b64, canonical, short, unb64, verify
 from .phonebook import Phonebook
 from .outbox import Outbox
 from .records import Record
@@ -592,11 +592,82 @@ class Node:
         if not group:
             raise ValueError("unknown group")
         if group.owner == self.ident.pubkey:
-            raise ValueError("you own this group; remove the other members instead")
+            others = [m for m in group.members if m != self.ident.pubkey]
+            if not others:
+                raise ValueError(f"you're the host of #{group.name} and its only member: "
+                                 f"/group delete {group.name} to get rid of it")
+            raise ValueError(f"you're the host of #{group.name}. Choose a successor to own it: "
+                             f"/group leave {group.name} NAME (or /group transfer {group.name} NAME to stay), "
+                             f"or delete it for everyone: /group delete {group.name}")
         self.groups.set_status(group_id, status)
         req = {"group": group_id, "from": self.ident.pubkey, "ts": time.time()}
         leave = {"type": "group_leave", "req": req, "sig": self.ident.sign(canonical(req))}
         await self._deliver(group.owner, leave, f"group_leave:{group_id}:{req['ts']}")
+
+    async def transfer_group(self, group_id: str, new_owner: str, leave: bool = False) -> str | None:
+        """Hand a group we own to another member. We sign the hand-over and send it, with the group's
+        key history, sealed to them; their node then republishes the group as its owner (dropping us
+        if we're leaving). Returns "delivered" / "waiting" (they're offline: it's in our outbox)."""
+        group = self._owned(group_id)
+        if new_owner == self.ident.pubkey or new_owner not in group.members:
+            raise ValueError("the new owner has to be another member of the group")
+        transfer = {"to": new_owner, "sig": self.ident.sign(transfer_body(group_id, new_owner, len(group.transfers)))}
+        epochs = {str(e): {**meta, "key": b64(self.groups.keys[group_id][e])}
+                  for e, meta in self.groups.epochs.get(group_id, {}).items() if e in self.groups.keys.get(group_id, {})}
+        handoff = {"group": group.to_dict(), "transfer": transfer, "epochs": epochs, "leave": leave}
+        result, _ = await self._send_sealed("group_handoff", new_owner, {"handoff": handoff})
+        if result and leave:
+            self.groups.set_status(group_id, "left")
+        return result
+
+    async def delete_group(self, group_id: str) -> None:
+        """Delete a group for everyone: a final, signed "deleted" update. Members' nodes forget its
+        messages and keys (honest clients, anyway: nobody can force a copy to be forgotten)."""
+        old = self._owned(group_id)
+        await self._publish(old.name, old.members, old, {**old.settings, "deleted": True})
+        self.groups.purge(group_id)
+
+    async def _take_over(self, inner: dict) -> None:
+        """We were handed a group: check the hand-over, adopt its key history, republish as owner."""
+        h = inner.get("handoff") or {}
+        group = GroupRecord.from_dict(h.get("group") or {})
+        transfer = h.get("transfer") or {}
+        if (not group or group.owner != inner["from"] or self.ident.pubkey not in group.members
+                or transfer.get("to") != self.ident.pubkey
+                or not verify(group.owner, transfer_body(group.group_id, self.ident.pubkey, len(group.transfers)),
+                              str(transfer.get("sig")))):
+            self.log("ignored an invalid group hand-over")
+            return
+        gid = group.group_id
+        self.groups.merge(group)  # no-op if we already have a newer copy
+        group = self.groups.get(gid)
+        if group.owner != inner["from"] or len(group.transfers) != len(h["group"].get("transfers") or []):
+            self.log(f"ignored a stale hand-over of #{group.name}")  # ownership moved on since it was sent
+            return
+        for e, meta in (h.get("epochs") or {}).items():
+            try:
+                self.groups.keys.setdefault(gid, {})[int(e)] = unb64(meta["key"])
+                self.groups.epochs.setdefault(gid, {})[int(e)] = {"mode": meta["mode"], "start": float(meta["start"])}
+            except (KeyError, TypeError, ValueError):
+                continue
+        leaving = group.owner if h.get("leave") else None
+        enc_keys = {}
+        for m in group.members:
+            if m in (self.ident.pubkey, leaving):
+                continue
+            try:
+                enc_keys[m] = await self._enc_key(m)
+            except ValueError:
+                self.log(f"no key for {self._name(m)} yet; they'll need re-adding to #{group.name}")
+        new = self.groups.build_record(group.name, list(enc_keys), enc_keys, group, group.settings,
+                                       transfer={"to": self.ident.pubkey, "sig": transfer["sig"]})
+        self.groups.set_status(gid, "accepted")
+        self.groups.merge(new)
+        self.log(f"{self._name(inner['from'])} made you the owner of #{group.name}")
+        self._emit("group_owner", group=new, previous=inner["from"])
+        msg = {"type": "group_update", "group": new.to_dict()}
+        item = f"group_update:{gid}:{new.seq}"
+        await asyncio.gather(*(self._deliver(pk, msg, item) for pk in set(group.members) - {self.ident.pubkey}))
 
     def pending_groups(self) -> list[GroupRecord]:
         return [g for g in self.groups.all()
@@ -823,7 +894,7 @@ class Node:
                 self._spawn(self._answer_punch(peer, addrs))
             return {"ok": True, "addrs": self._candidates()}
 
-        if kind in ("msg", "file_offer"):
+        if kind in ("msg", "file_offer", "group_handoff"):
             inner = self._open_sealed(msg)
             if not inner:
                 return {"ok": False, "error": "bad message"}
@@ -831,6 +902,9 @@ class Node:
                 return {"ok": True}  # dropped; don't tell them they're blocked
             if kind == "file_offer":
                 self._on_file_offer(inner)
+                return {"ok": True}
+            if kind == "group_handoff":
+                self._spawn(self._take_over(inner))
                 return {"ok": True}
             inner.setdefault("id", legacy_id(inner))
             if not self.dms.add(inner["from"], inner):
@@ -855,7 +929,14 @@ class Node:
             was_member = bool(known and self.ident.pubkey in known.members)
             if self.groups.merge(group):
                 inviter = self._name(group.owner)
-                if self.ident.pubkey not in group.members:
+                if group.deleted:
+                    if self.groups.status.get(group.group_id) in ("accepted", "pending"):
+                        self.log(f"{inviter} deleted group {group.name}")
+                        self._emit("group_deleted", group=group)
+                    self.groups.purge(group.group_id)
+                elif known and known.owner != group.owner and self.ident.pubkey in group.members:
+                    self.log(f"#{group.name} has a new owner: {self._name(group.owner)}")
+                elif self.ident.pubkey not in group.members:
                     if self.groups.status.get(group.group_id) == "accepted":
                         self.groups.set_status(group.group_id, "removed")
                         self.log(f"you were removed from group {group.name}")
