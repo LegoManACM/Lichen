@@ -75,6 +75,9 @@ class Outbox(private val file: File? = null) {
 
     fun size(): Int = synchronized(lock) { items.size }
 
+    /** Is [itemId] still waiting to be delivered? */
+    fun has(itemId: String): Boolean = synchronized(lock) { itemId in items }
+
     /** It got through (or was refused): drop it and remember that for a month. */
     fun remove(itemId: String) {
         val had = synchronized(lock) {

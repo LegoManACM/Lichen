@@ -58,7 +58,7 @@ open class FileSetup : LichenSetup {
         }
     }
 
-    override fun open(dataDir: File): ChatClient = TODO("node layer")
+    override fun open(dataDir: File): ChatClient = dev.lichen.core.node.NodeClient(dataDir)
 }
 
 /** The two options we need from a lichen.yaml. */

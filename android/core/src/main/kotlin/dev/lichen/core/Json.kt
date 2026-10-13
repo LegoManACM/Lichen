@@ -137,6 +137,9 @@ fun dumps(e: JsonElement): String = e.toString()
 /** The text of a JSON string, or null if this isn't one. */
 fun JsonElement?.asString(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.content
 
+/** A JSON true/false, else null. */
+fun JsonElement?.asBool(): Boolean? = (this as? JsonPrimitive)?.takeIf { !it.isString }?.content?.let { when (it) { "true" -> true; "false" -> false; else -> null } }
+
 /** A JSON number (not a numeric string) as Double, else null. */
 fun JsonElement?.asDouble(): Double? = (this as? JsonPrimitive)?.takeIf { it !is JsonNull && !it.isString }?.content?.toDoubleOrNull()
 
