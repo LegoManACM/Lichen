@@ -26,8 +26,14 @@ class DmStore:
         self.path = path
         self.convos: dict[str, list[dict]] = {}  # peer pubkey -> [{id, from, to, ts, text, sig}], by ts
         self._ids: dict[str, set[str]] = {}
+        # What we know about messages we sent: peer -> {"delivered": [ids], "read_ts": newest read}
+        self.receipts: dict[str, dict] = {}
         if path and path.exists():
-            for peer, log in json.loads(path.read_text(encoding="utf-8")).items():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if "convos" in data:  # current format; older files were just {peer: [messages]}
+                self.receipts = data.get("receipts", {})
+                data = data["convos"]
+            for peer, log in data.items():
                 for m in log:
                     m.setdefault("id", legacy_id(m))
                 self.convos[peer] = sorted(log, key=lambda m: m["ts"])
@@ -64,7 +70,32 @@ class DmStore:
         """Signed messages in this conversation that the other side doesn't have."""
         return [m for m in self.convos.get(peer, []) if m["id"] not in have and "sig" in m][-limit:]
 
+    # --- receipts (for messages we sent) ---------------------------------------------------------
+
+    def mark_delivered(self, peer: str, msg_id: str) -> None:
+        r = self.receipts.setdefault(peer, {"delivered": [], "read_ts": 0})
+        if msg_id not in r["delivered"]:
+            r["delivered"] = (r["delivered"] + [msg_id])[-HISTORY_LIMIT:]
+            self.save()
+
+    def mark_read(self, peer: str, upto_ts: float) -> bool:
+        r = self.receipts.setdefault(peer, {"delivered": [], "read_ts": 0})
+        if upto_ts <= r["read_ts"]:
+            return False
+        r["read_ts"] = upto_ts
+        self.save()
+        return True
+
+    def receipt(self, peer: str, message: dict) -> str | None:
+        """"read", "delivered" or None (no news) for one of our messages to peer."""
+        r = self.receipts.get(peer)
+        if not r:
+            return None
+        if message["ts"] <= r["read_ts"]:
+            return "read"
+        return "delivered" if message["id"] in r["delivered"] else None
+
     def save(self) -> None:
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(self.convos), encoding="utf-8")
+            self.path.write_text(json.dumps({"convos": self.convos, "receipts": self.receipts}), encoding="utf-8")

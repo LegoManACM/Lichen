@@ -66,6 +66,10 @@ SYNC_MAX_AGE = 300  # seconds a signed sync request stays valid
 LEAVE_MAX_AGE = 7 * 24 * 3600  # a leave request may wait in our outbox while the owner is away
 FILE_RETRIES = 4  # attempts per chunk before a download is marked failed (it can be resumed)
 OUTBOX_EVERY = 4  # keepalive ticks between outbox retries (4 x 15 s = once a minute)
+PRESENCE_EVERY = 2  # keepalive ticks between "still here" signals to contacts (2 x 15 s)
+ONLINE_WINDOW = 75.0  # seen this recently = online
+TYPING_EVERY = 3.0  # at most one typing signal per contact per this many seconds
+TYPING_SHOWN = 6.0  # how long "typing…" stays up after a signal
 RELAY_PREFIX = "relay:"
 KEEPALIVE = 15.0  # seconds between public-address checks and pings to direct peers (keeps NAT mappings open)
 PUNCH_RETRY = 60.0  # after a failed punch, use the relay for this long before trying again
@@ -145,6 +149,10 @@ class Node:
         self._punch_failed: dict[str, float] = {}
         self._flushing: set[str] = set()  # peers whose outbox is being delivered right now
         self._owed_seen: dict[str, set[str]] = {}  # IOU item ids already reported, per sender
+        self.last_seen: dict[str, float] = {}  # pubkey -> last time we heard from / reached them
+        self.typing: dict[str, float] = {}  # pubkey -> show "typing…" until this time
+        self._typing_sent: dict[str, float] = {}
+        self._read_sent: dict[str, float] = {}
 
     @classmethod
     def from_dir(cls, data_dir: Path, name: str, downloads: Path | None = None, passphrase: str | None = None,
@@ -324,6 +332,8 @@ class Node:
             await asyncio.gather(*(self.udp.keepalive(pk) for pk in list(self.udp.paths)))
             if tick % OUTBOX_EVERY == 0 and self.outbox.items:
                 await self.flush_outbox()
+            if tick % PRESENCE_EVERY == 0:
+                await self._presence_round()
 
     async def _try_direct(self, pubkey: str, hub: str) -> None:
         """Send pubkey a punch request through their relay (it carries our addresses, the reply carries
@@ -482,7 +492,72 @@ class Node:
         result, inner = await self._send_sealed("msg", pubkey, {"text": text, **(extra or {})})
         if result:
             self.dms.add(pubkey, inner)
+        if result == "delivered":
+            self.dms.mark_delivered(pubkey, inner["id"])
+            self._seen(pubkey)
         return result
+
+    def message_status(self, pubkey: str, message: dict) -> str | None:
+        """For a DM we sent: "waiting" (in our outbox), "delivered", "read", or None."""
+        if f"msg:{message['id']}" in self.outbox.items:
+            return "waiting"
+        return self.dms.receipt(pubkey, message)
+
+    # --- presence, typing, read receipts ---------------------------------------------------------
+    # Ephemeral signals, sealed like messages but never stored, synced or queued, and only exchanged
+    # with contacts: strangers learn nothing about when you're around or what you've read.
+
+    def _seen(self, pubkey: str) -> None:
+        was_online = self.online(pubkey)
+        self.last_seen[pubkey] = time.time()
+        if not was_online and self.trust.trusted(pubkey):
+            self._emit("presence", pubkey=pubkey, online=True)
+
+    def online(self, pubkey: str) -> bool:
+        return time.time() - self.last_seen.get(pubkey, 0) < ONLINE_WINDOW
+
+    async def _quick(self, pubkey: str, msg: dict) -> dict | None:
+        """One cheap attempt: the direct path or their first addresses. No lookups, no outbox."""
+        rec = self.phonebook.get(pubkey)
+        for addr in (rec.addrs[:2] if rec else []):
+            reply = await self._req(addr, pubkey, msg)
+            if reply is not None and not reply.get("unreachable") and not reply.get("iou"):
+                return reply
+        return None
+
+    async def _signal(self, pubkey: str, fields: dict) -> bool:
+        if not self.trust.trusted(pubkey):
+            return False
+        rec = self.phonebook.get(pubkey)
+        if not rec or not rec.enc:
+            return False
+        inner = {"from": self.ident.pubkey, "to": pubkey, "ts": time.time(), **fields}
+        inner["sig"] = self.ident.sign(canonical(inner))
+        reply = await self._quick(pubkey, {"type": "signal", "to": pubkey, "sealed": seal(rec.enc, canonical(inner))})
+        if reply and reply.get("ok"):
+            self._seen(pubkey)
+            return True
+        return False
+
+    async def _presence_round(self) -> None:
+        contacts = [pk for pk, lv in self.trust.levels.items() if lv == "trusted" and self.phonebook.get(pk)]
+        was = {pk: self.online(pk) for pk in contacts}
+        await asyncio.gather(*(self._signal(pk, {"signal": "here"}) for pk in contacts))
+        for pk in contacts:
+            if was[pk] and not self.online(pk):
+                self._emit("presence", pubkey=pk, online=False)
+
+    def send_typing(self, pubkey: str) -> None:
+        if time.time() - self._typing_sent.get(pubkey, 0) >= TYPING_EVERY:
+            self._typing_sent[pubkey] = time.time()
+            self._spawn(self._signal(pubkey, {"signal": "typing"}))
+
+    def send_read(self, pubkey: str) -> None:
+        """Tell pubkey we've read everything they sent so far (call when their chat is on screen)."""
+        theirs = [m["ts"] for m in self.dms.messages(pubkey) if m["from"] == pubkey]
+        if theirs and max(theirs) > self._read_sent.get(pubkey, 0):
+            self._read_sent[pubkey] = max(theirs)
+            self._spawn(self._signal(pubkey, {"signal": "read", "upto": max(theirs)}))
 
     # --- catching up -----------------------------------------------------------------------------
 
@@ -500,6 +575,9 @@ class Node:
                         break  # still away; their hubs hold IOUs again
                     self.outbox.remove(item_id)  # delivered (or refused: don't retry forever)
                     sent += bool(reply.get("ok"))
+                    if reply.get("ok") and item_id.startswith("msg:"):
+                        self.dms.mark_delivered(pk, item_id[4:])
+                        self._emit("receipt", pubkey=pk)
             finally:
                 self._flushing.discard(pk)
         if sent:
@@ -830,6 +908,7 @@ class Node:
                 self.log(f"{rec.name} ({short(rec.pubkey)}) is now at {', '.join(rec.addrs)}")
                 self._spawn(self._gossip(rec, exclude={str(msg.get("from"))}))
                 self._spawn(self._peer_online(rec.pubkey))  # a fresh record means they're (back) online
+                self._seen(rec.pubkey)
             return {"ok": True}
 
         if kind == "lookup":
@@ -896,12 +975,31 @@ class Node:
                 self._spawn(self._answer_punch(peer, addrs))
             return {"ok": True, "addrs": self._candidates()}
 
+        if kind == "signal":
+            inner = self._open_sealed(msg)
+            if not inner or not self.trust.trusted(inner["from"]):
+                return {"ok": False, "error": "not allowed"}
+            sender = inner["from"]
+            self._seen(sender)
+            if inner.get("signal") == "typing":
+                self.typing[sender] = time.time() + TYPING_SHOWN
+                self._emit("typing", pubkey=sender)
+            elif inner.get("signal") == "read":
+                try:
+                    if self.dms.mark_read(sender, float(inner.get("upto"))):
+                        self._emit("receipt", pubkey=sender)
+                except (TypeError, ValueError):
+                    pass
+            return {"ok": True}
+
         if kind in ("msg", "file_offer", "group_handoff"):
             inner = self._open_sealed(msg)
             if not inner:
                 return {"ok": False, "error": "bad message"}
             if self.trust.blocked(inner["from"]):
                 return {"ok": True}  # dropped; don't tell them they're blocked
+            self._seen(inner["from"])
+            self.typing.pop(inner["from"], None)  # they finished typing
             if kind == "file_offer":
                 self._on_file_offer(inner)
                 return {"ok": True}

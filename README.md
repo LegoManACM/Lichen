@@ -279,6 +279,18 @@ they work offline (IOUs), sync, and dedupe like everything else. Edits and delet
 original author are ignored. Deleting is best effort: honest clients hide the text, but someone who
 already received it could have kept a copy.
 
+## Presence, receipts and typing
+
+- **Online / last seen:** your node quietly checks in with your contacts every 30 s; anyone heard from
+  in the last ~75 s shows as online (a filled dot in the sidebar), otherwise "last seen 5m ago".
+- **Ticks on your direct messages:** `…` waiting in your outbox (they're offline), `✓` delivered,
+  `✓✓` read (they had the chat open).
+- **Typing:** "typing…" shows in the chat header while they write to you.
+
+These are **signals**: sealed like messages, but never stored, synced or queued, and only exchanged
+between contacts, so strangers can't tell when you're around or what you've read. Receipts and typing
+are for direct messages only (in groups they'd be noise).
+
 ## Trust, requests and invites
 
 Every key is **trusted** (a contact), **unknown**, or **blocked** (`trust.json`):

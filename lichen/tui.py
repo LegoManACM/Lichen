@@ -45,6 +45,15 @@ def _clock(ts: float) -> str:
     return time.strftime("%H:%M", time.localtime(ts))
 
 
+def _ago(ts: float) -> str:
+    seconds = time.time() - ts
+    if seconds < 3600:
+        return f"{max(1, int(seconds // 60))}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return time.strftime("%b %d", time.localtime(ts))
+
+
 def dropped_file(text: str) -> Path | None:
     """A whole input that is the path of an existing file (what a terminal pastes when you drop one)."""
     candidate = text.strip().strip('"').strip("'").strip()
@@ -314,6 +323,9 @@ class ChatApp(App):
         text = "[dim i](deleted)[/]" if item.deleted else escape(item.text) + (" [dim](edited)[/]" if item.edited else "")
         reacts = ("  " + " ".join(f"{e}{len(s) if len(s) > 1 else ''}" for e, s in item.reactions.items())
                   if item.reactions else "")
+        if me and self.current[0] == "dm" and not item.deleted:
+            status = self.node.message_status(self.current[1], {"id": item.id, "ts": item.ts})
+            reacts += {"waiting": " [dim]…[/]", "delivered": " [dim]✓[/]", "read": " [green]✓✓[/]"}.get(status, "")
         lines.append(f"[dim]{item.number:>3} {_clock(item.ts)}[/] [bold {color}]{escape(self._who(item.sender))}[/] "
                      f"{text}{reacts}")
         return "\n".join(lines)
@@ -339,7 +351,7 @@ class ChatApp(App):
         contacts = []
         for pk in sorted(people, key=lambda k: self._who(k).lower()):
             rec = node.phonebook.get(pk)
-            marker = MARKERS[link(node, rec)] if rec else "[dim]○[/]"
+            marker = MARKERS[link(node, rec)] if rec and node.online(pk) else "[dim]○[/]"
             name = escape(self._who(pk))
             if pk in strangers:
                 warn = " [red]⚠[/]" if self.commands.impostor_warning(pk) else ""
@@ -438,6 +450,7 @@ class ChatApp(App):
                        "Nothing from the group shows until you join.")
         else:
             self._draw_history(key)
+            self._mark_read()
             if key[0] == "dm" and self.commands and (warning := self.commands.impostor_warning(key[1])):
                 chat.write(f"[bold red]{escape(warning)}[/]")
             if key[0] == "dm" and self.commands and key[1] in self.commands.message_requests():
@@ -468,6 +481,11 @@ class ChatApp(App):
                 self.current[0] == "group" and self.node.groups.status.get(self.current[1]) == "pending"):
             self.query_one("#chat", RichLog).clear()
             self._draw_history(self.current)
+            self._mark_read()
+
+    def _mark_read(self) -> None:
+        if self.current[0] == "dm" and self.node.trust.trusted(self.current[1]):
+            self.node.send_read(self.current[1])
 
     def recall_last(self) -> None:
         if not self.commands or self.current[0] not in ("dm", "group"):
@@ -532,7 +550,16 @@ class ChatApp(App):
             trust = {"trusted": "contact", "blocked": "blocked"}.get(self.node.trust.get(ident), "not a contact")
             verified = ("[green]✓ verified[/]" if self.node.trust.is_verified(ident)
                         else f"[dim]{fingerprint(ident)} · /verify to check[/]")
-            title.update(f"{escape(self._convo_name(self.current))}  {verified}  [dim]· {trust} · {how}{where}[/]{busy}")
+            if self.node.typing.get(ident, 0) > time.time():
+                presence = "[i green]typing…[/]"
+            elif self.node.online(ident):
+                presence = "[green]online[/]"
+            elif ident in self.node.last_seen:
+                presence = f"[dim]last seen {_ago(self.node.last_seen[ident])}[/]"
+            else:
+                presence = "[dim]offline[/]"
+            title.update(f"{escape(self._convo_name(self.current))}  {presence}  {verified}  "
+                         f"[dim]· {trust} · {how}{where}[/]{busy}")
         else:
             g = self.node.groups.get(ident)
             if g:
@@ -598,6 +625,18 @@ class ChatApp(App):
             self.notify(f"{self._who(g.owner)} deleted #{g.name}", title="Group", timeout=6)
             if self.current == ("group", g.group_id):
                 self.open(CONSOLE)
+        elif kind == "typing":
+            if self.current == ("dm", d["pubkey"]):
+                self._render_title()
+                self.set_timer(6.5, self._render_title)
+            return
+        elif kind == "receipt":
+            if self.current == ("dm", d["pubkey"]):
+                self._redraw()
+            return
+        elif kind == "presence":
+            self.refresh_sidebar()
+            return
         elif kind == "owed":
             self.to_console(f"[dim]{escape(self._who(d['sender']))} has {d['count']} thing(s) for you; "
                             f"they'll arrive when {escape(self._who(d['sender']))} is online[/]")
@@ -624,6 +663,9 @@ class ChatApp(App):
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "input":
             self._update_hints(event.value)
+            if (self.node and self.current[0] == "dm" and event.value.strip()
+                    and not event.value.startswith("/") and self.node.trust.trusted(self.current[1])):
+                self.node.send_typing(self.current[1])
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "input":

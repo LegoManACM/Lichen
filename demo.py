@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 from lichen.crypto import encrypt
@@ -506,6 +507,28 @@ async def main() -> None:
     e_rel = [i for i in ev if i.id == rel.id][0]
     assert e_rel.reactions == {"🎉": [alice.ident.pubkey]} and any(i.reply_to == rel.id for i in ev)
     print("   alice's 🎉 and reply reached erin in the group")
+
+    step("presence, delivered / read receipts, typing (contacts only)")
+    await dave._presence_round()
+    assert dave.online(erin.ident.pubkey) and erin.online(dave.ident.pubkey)
+    assert await dave.send(erin.ident.pubkey, "did you see this?") == "delivered"
+    sent = dave.dms.messages(erin.ident.pubkey)[-1]
+    assert dave.message_status(erin.ident.pubkey, sent) == "delivered"
+    erin.send_read(dave.ident.pubkey)
+    assert await wait_until(lambda: dave.message_status(erin.ident.pubkey, sent) == "read")
+    erin.send_typing(dave.ident.pubkey)
+    assert await wait_until(lambda: dave.typing.get(erin.ident.pubkey, 0) > time.time())
+    print("   dave sees erin online, his message went delivered -> read, and 'erin is typing'")
+    assert not await mal._signal(dave.ident.pubkey, {"signal": "here"}), "dave blocked mal: no presence for mal"
+    await ivy.stop()
+    await asyncio.sleep(SETTLE)
+    assert await dave.send(ivy.ident.pubkey, "ping when you're back") == "waiting"
+    waiting = dave.dms.messages(ivy.ident.pubkey)[-1]
+    assert dave.message_status(ivy.ident.pubkey, waiting) == "waiting"
+    ivy = make("ivy", 0, [PHONEBOOK], relay=[PHONEBOOK, HUB2])
+    await ivy.start()
+    assert await wait_until(lambda: dave.message_status(ivy.ident.pubkey, waiting) == "delivered")
+    print("   ivy offline: '...' waiting; she comes back and it turns into a delivered tick")
 
     step("mallory forges a record claiming alice lives at mallory's address")
     mallory = Identity.generate()
