@@ -1,7 +1,7 @@
 package dev.lichen.app
 
 import android.content.Context
-import dev.lichen.app.fake.FakeSetup
+import dev.lichen.core.FileSetup
 import dev.lichen.core.api.ChatClient
 import dev.lichen.core.api.LichenSetup
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -9,11 +9,10 @@ import java.io.File
 
 /**
  * The one place that decides which implementation the app runs on.
- * To use the real node, change [setup] to the core's LichenSetup implementation (one line).
+ * The real node (FileSetup); the fakes in dev.lichen.app.fake are for previews.
  */
 object Backend {
-    /** Swap this for the real LichenSetup once the core lands. */
-    val setup: LichenSetup = FakeSetup()
+    val setup: LichenSetup = FileSetup()
 
     fun dataDir(context: Context): File = File(context.applicationContext.filesDir, "lichen").also { it.mkdirs() }
 
