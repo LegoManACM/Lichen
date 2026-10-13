@@ -34,6 +34,7 @@ data class Contact(
     val online: Boolean = false,
     val unread: Int = 0,
     val lastMessage: ChatMessage? = null,
+    val verified: Boolean = false, // we compared safety codes with them (synced between our devices)
 ) {
     val displayName: String get() = nickname ?: name
 }
@@ -57,6 +58,12 @@ sealed interface ClientEvent {
     data class GroupIncoming(val group: GroupInfo, val message: GroupMessage) : ClientEvent
     /** We were invited to a group. */
     data class GroupInvite(val group: GroupInfo, val inviterName: String) : ClientEvent
+    /** Someone offered us a file (see [ChatClient.files]); [trusted] = from a contact, worth a notification. */
+    data class FileOffer(val transfer: FileTransfer, val senderName: String, val trusted: Boolean) : ClientEvent
+    /** A download finished and passed its hash check. */
+    data class FileDownloaded(val transfer: FileTransfer) : ClientEvent
+    /** A download failed (resumable: download again). */
+    data class FileFailed(val transfer: FileTransfer, val error: String) : ClientEvent
 }
 
 interface ChatClient {
@@ -69,6 +76,8 @@ interface ChatClient {
     val events: SharedFlow<ClientEvent>
     /** Group chats. */
     val groups: GroupsApi
+    /** File offers and transfers. */
+    val files: FilesApi
 
     /** Conversation with pubkey, oldest first. */
     fun messages(pubkey: String): StateFlow<List<ChatMessage>>
@@ -88,4 +97,24 @@ interface ChatClient {
 
     /** Retry the outbox, re-sync chats, re-announce. */
     suspend fun syncNow()
+
+    // --- phase 2 ---------------------------------------------------------------------------------
+
+    /** Public keys of contacts who are typing to us right now (shown ~6 s after their last signal). */
+    val typing: StateFlow<Set<String>>
+
+    /** The user is typing in the chat with [pubkey]: lets them know (throttled to once per 3 s). */
+    fun typing(pubkey: String)
+
+    /** Strangers who wrote to us (trust UNKNOWN, with messages): accept with [setTrust] TRUSTED, or block. Newest first. */
+    val requests: StateFlow<List<Contact>>
+
+    /** The 20 digits (in groups of five) both sides of this conversation see; compare them out loud. */
+    fun safetyCode(pubkey: String): String
+
+    /** Remember (or forget) that we compared safety codes with [pubkey]. */
+    suspend fun setVerified(pubkey: String, verified: Boolean)
+
+    /** The most recent node log lines (last 200), oldest first, for a debug screen. */
+    val log: StateFlow<List<String>>
 }

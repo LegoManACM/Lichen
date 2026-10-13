@@ -47,12 +47,13 @@ fun HubChip(hubs: List<HubStatus>) {
 @Composable
 fun ContactsScreen(
     client: ChatClient, profileName: String, profileId: String, onSwitcher: () -> Unit,
-    onOpenChat: (String) -> Unit, onNewChat: () -> Unit, onProfile: () -> Unit,
+    onOpenChat: (String) -> Unit, onNewChat: () -> Unit, onProfile: () -> Unit, onRequests: () -> Unit = {},
     onOpenGroup: (String) -> Unit = {}, onNewGroup: () -> Unit = {},
 ) {
     val contacts by client.contacts.collectAsState()
     val groups by client.groups.groups.collectAsState()
     val scope = rememberCoroutineScope()
+    val requests by client.requests.collectAsState()
     val hubs by client.hubs.collectAsState()
     Scaffold(
         topBar = {
@@ -71,6 +72,7 @@ fun ContactsScreen(
         Column(Modifier.padding(pad).fillMaxSize()) {
             BatteryCard()
             TextButton(onClick = onNewGroup, Modifier.padding(horizontal = 8.dp)) { Text("New group") }
+            if (requests.isNotEmpty()) TextButton(onClick = onRequests) { Text("Requests (${requests.size})") }
             if (contacts.isEmpty() && groups.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text("No chats yet. Tap New chat to say hello.", style = MaterialTheme.typography.bodyLarge)

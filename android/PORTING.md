@@ -92,12 +92,59 @@ Requests the phone must **make**: `hello` (join each hub at start), `announce` (
 
 Device id: own random id in `device` (never copied from an export). An imported identity is `linked`.
 
-## Phases 2 and 3 (later)
-2. Requests screen, read/delivered receipts, typing, presence, device sync (`device_sync`, vault).
-3. Groups (done), files, UDP hole punching.
+## Phase 2 (done): signals, device sync, requests
+
+- `node/Signals.kt`: presence `here` every 2 keepalive ticks (30 s) to trusted contacts, `sendTyping` (3 s throttle),
+  `sendRead`. Signals only go to trusted contacts and are sealed like messages (`_quick` = first two addrs, no outbox).
+- `node/DeviceSync.kt`: `_pack/_seal_snapshot/_open_snapshot`, live `device_sync` probe/full through the hubs
+  (`forward` + `except_device`/`fanout`/`only_device`), vault push/pull (client side only; the phone answers
+  `vault_put`/`vault_get` with an error), `devsync.json`, final push on stop (`Node.finalSync`, called by `NodeClient.stop`).
+  Timings as in Python: change -> live sync after 1 s, vault push after 5 s with at least 15 s between uploads per hub
+  (a change inside that gap waits for the next 60 s device round or the final push, same as Python).
+- The synced state is a map of named sections (`DeviceSync.register(name, StateSection(inDigest, export, merge))`).
+  Registered: `trust`, `dms`, `outbox`, `phonebook` (not in the digest, like Python). `groups` and `files` start as
+  the empty shapes Python produces with no groups/files (`{}` and `{"incoming": {}}`), so digests agree with a Python
+  device that has none. **Until the groups/files code registers real sections, a device that has groups or file
+  offers will never agree on the digest with the phone** (it will keep trying a full swap; chats still merge) and
+  those sections are not carried through the phone. Stores' merge functions must not call their change hook.
+- `ChatClient`: `typing`, `typing(pk)`, `requests`, `safetyCode`, `setVerified`, `log`; `Contact.verified`.
+  `NodeClient(dataDir, logSink)` / `FileSetup(logSink)`: the app passes `Log.i("Lichen", ...)`.
+- Tests: `Phase2IntegrationTest` against `tools/py_peer.py` (which gained signal/status/receipt, `start_sibling`
+  (a second Python device with the same identity), vault/digest commands).
+
+## Phase 3 (later)
+UDP hole punching.
+
+## Files (phase 3, DM case)
+
+Code: `store/FileStore.kt` (files.json, same format as Python), `node/Files.kt` (`FileService`: `file_offer` /
+`file_get` handling, `send`, `download`, `decline`, auto-download), `api/FilesApi.kt` (`ChatClient.files`).
+`Node` only has `var files: FileHandler?` and one dispatch line in `handle` for `file_offer` / `file_get`;
+`NodeClient` creates the `FileService` and calls `load()` / `attach(node)` / `detach()`.
+
+- Sent files are **copied into app storage** (`<data>/sent/<file_id>`, `Outgoing.path` points there) while the
+  offer is made, so `file_get` keeps working after the picker's access ends. Never deleted automatically.
+  Downloads: `<data>/partial/<id>.part`, then `<data>/downloads/<safe name>`.
+- Limits (`max_file_mb`, `auto_download_mb`) are in `<data>/filelimits.json` and `FilesApi.limits/setLimits`
+  (Python keeps them in lichen.yaml). Defaults 100 / 0. Auto-download needs `auto_download_mb > 0` (Python also
+  auto-downloads empty files at 0; we do not).
+- Offers from non-contacts are stored and shown in the chat with that person but only `trusted` senders notify
+  (`ClientEvent.FileOffer.trusted`). A stranger who only sends a file does not appear in the contacts list until
+  the Requests screen (phase 2) exists.
+- **Device sync**: `FileService.fileStore()` gives the `FileStore`; register `deviceState()` under `"files"` and call
+  `mergeDeviceState(state["files"])` (returns changed count), and set `fileStore().onChange` for "offers changed"
+  (not fired for download progress or merges). `refresh()` is called on merge via `onUpdate`.
+- **Groups hook**: a group file offer is `files.send(open, name, size, to = members minus us, group = groupId)`
+  (= `node.send_file(group=...)`; the caller checks membership). Incoming group offers are stored with `group` set
+  and listed in `files.transfers` with `FileTransfer.group != null`; the DM chat ignores those.
+- A download cancelled by `stop()` goes back to `pending` (resumable from the whole chunks already on disk).
 
 ### Groups (phase 3, done)
 `store/GroupStore.kt` is groups.py (same groups.json, `deviceState()`/`mergeDeviceState()`), `node/Groups.kt` is the
 groups section of node.py plus the `group_*` handlers, `node/GroupsClient.kt` + `api/GroupsApi.kt` the UI side
 (`ChatClient.groups`). One deviation: outbox/IOU item ids for fan-out items are `group_update:<gid>:<seq>:<pubkey>`
 (Python reuses one id for every recipient, so its outbox only queues the first absentee).
+`GroupStore` is the `"groups"` device-sync section (`deviceState(keep)` / `mergeDeviceState`, digest included like Python);
+its `onChange` feeds `deviceSync.stateChanged()` and merges do not fire it (`onRemoteChange` instead).
+Group files: the node side works (`files.send(..., to = members minus us, group = gid)`), but the group chat UI has no
+attach button or file bubbles yet, and `GroupsApi` has no file call.

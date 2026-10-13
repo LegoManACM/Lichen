@@ -60,6 +60,19 @@ fun InfoScreen(client: ChatClient, pubkey: String, onBack: () -> Unit) {
                 )
             }
 
+            Column(Modifier.fillMaxWidth()) {
+                Text("Safety code", style = MaterialTheme.typography.labelLarge)
+                Text(client.safetyCode(pubkey), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "You and ${c.displayName} should see the same digits.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Verified", Modifier.weight(1f))
+                    Switch(c.verified, { v -> scope.launch { client.setVerified(pubkey, v) } })
+                }
+            }
+
             HorizontalDivider()
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Trust: " + when (c.trust) {
@@ -85,7 +98,7 @@ fun InfoScreen(client: ChatClient, pubkey: String, onBack: () -> Unit) {
 @Composable
 fun ProfileScreen(
     client: ChatClient, onBack: () -> Unit, onSaveHubs: (name: String, hubs: List<String>) -> Unit,
-    onDelete: () -> Unit,
+    onDelete: () -> Unit, onDebugLog: () -> Unit = {},
 ) {
     val profile by client.profile.collectAsState()
     val hubStatus by client.hubs.collectAsState()
@@ -140,6 +153,7 @@ fun ProfileScreen(
                 "Sync now retries anything waiting to be sent and catches up on chats from your other devices.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            OutlinedButton(onClick = onDebugLog) { Text("Debug log") }
             HorizontalDivider()
             OutlinedButton(
                 onClick = onDelete,

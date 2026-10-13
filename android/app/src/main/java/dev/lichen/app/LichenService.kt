@@ -90,6 +90,7 @@ class LichenService : Service() {
                 if (e is ClientEvent.Incoming && Backend.currentChat.value != OpenChat(id, e.contact.pubkey)) notifyMessage(id, e)
                 if (e is ClientEvent.GroupIncoming && Backend.currentChat.value != OpenChat(id, "group:${e.group.id}")) notifyGroup(id, e)
                 if (e is ClientEvent.GroupInvite) notifyInvite(id, e)
+                if (e is ClientEvent.FileOffer && e.trusted && Backend.currentChat.value != OpenChat(id, e.transfer.from)) notifyOffer(id, e)
             }
         }
         return Running(c, job)
@@ -179,6 +180,20 @@ class LichenService : Service() {
             .setContentIntent(openIntent(profileId, key))
             .build()
         NotificationManagerCompat.from(this).notify("$profileId/$key/invite".hashCode(), n)
+    }
+
+    private fun notifyOffer(profileId: String, e: ClientEvent.FileOffer) {
+        if (!canNotify()) return
+        val text = "offered you ${e.transfer.name} (${dev.lichen.core.store.humanSize(e.transfer.size)})"
+        val n = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(e.senderName)
+            .setContentText(text)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setContentIntent(openIntent(profileId, e.transfer.from))
+            .build()
+        NotificationManagerCompat.from(this).notify("$profileId/file/${e.transfer.id}".hashCode(), n)
     }
 
     companion object {

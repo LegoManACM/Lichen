@@ -47,7 +47,8 @@ class NodeIntegrationTest {
             assertEquals(Trust.TRUSTED, contact.trust)
             assertEquals("alice", contact.name)
             assertEquals("hello alice é😀", contact.lastMessage?.text)
-            assertTrue(contact.online)
+            // markDelivered runs just before seen(): "online" lands a moment after the delivered tick.
+            eventually("alice online") { phone.client.contacts.value.single().online }
         } finally { phone.close() }
     }
 

@@ -153,6 +153,9 @@ class GroupStore(private val ident: Identity, private val enc: EncKey, private v
     private val logs = HashMap<String, LinkedHashMap<String, Entry>>()       // group -> msg id -> entry
     /** Called after anything changes (device sync hooks in here). */
     var onChange: (() -> Unit)? = null
+    /** Called once after [mergeDeviceState] changed something (onChange is not: a merge is not news for our other devices). */
+    var onRemoteChange: (() -> Unit)? = null
+    private val merging = ThreadLocal<Boolean>()
 
     init {
         if (file != null && file.exists()) {
@@ -204,7 +207,7 @@ class GroupStore(private val ident: Identity, private val enc: EncKey, private v
         changed()
     }
 
-    private fun changed() { onChange?.invoke() }
+    private fun changed() { if (merging.get() != true) onChange?.invoke() }
 
     /** Store [rec] if valid and newer, and pick up any keys it carries for us. */
     fun merge(rec: GroupRecord?): Boolean {
@@ -417,6 +420,13 @@ class GroupStore(private val ident: Identity, private val enc: EncKey, private v
     fun mergeDeviceState(state: JsonElement?): List<String> {
         val changed = ArrayList<String>()
         val st = state as? JsonObject ?: return changed
+        merging.set(true)
+        try { mergeAll(st, changed) } finally { merging.set(false) }
+        if (changed.isNotEmpty()) onRemoteChange?.invoke()
+        return changed
+    }
+
+    private fun mergeAll(st: JsonObject, changed: MutableList<String>) {
         for ((gid, g) in st) {
             try {
                 g as JsonObject
@@ -448,6 +458,5 @@ class GroupStore(private val ident: Identity, private val enc: EncKey, private v
             }
         }
         if (changed.isNotEmpty()) save()
-        return changed
     }
 }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.*
@@ -15,7 +16,10 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -29,6 +33,7 @@ import kotlinx.coroutines.launch
 fun ChatScreen(client: ChatClient, profileId: String, pubkey: String, onBack: () -> Unit, onInfo: () -> Unit) {
     val messages by client.messages(pubkey).collectAsState()
     val people by client.people.collectAsState()
+    val typingNow by client.typing.collectAsState()
     val contact = people.firstOrNull { it.pubkey == pubkey }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -41,7 +46,19 @@ fun ChatScreen(client: ChatClient, profileId: String, pubkey: String, onBack: ()
         if (resumed) Backend.currentChat.value = me
         onDispose { if (Backend.currentChat.value == me) Backend.currentChat.value = null }
     }
-    LaunchedEffect(messages.size) { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1) }
+    // Direct-message file offers share the timeline with the messages.
+    val transfers by client.files.transfers.collectAsState()
+    val me = client.profile.collectAsState().value?.pubkey
+    val timeline = remember(messages, transfers) {
+        (messages.map<ChatMessage, TimelineItem> { TimelineItem.Msg(it) } +
+            transfers.filter { it.group == null && me != null && it.peer(me) == pubkey }.map { TimelineItem.File(it) })
+            .sortedBy { it.ts }
+    }
+    LaunchedEffect(timeline.size) { if (timeline.isNotEmpty()) listState.animateScrollToItem(timeline.size - 1) }
+    val context = LocalContext.current
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) offerFile(context, client, pubkey, uri)
+    }
 
     Scaffold(
         modifier = Modifier.imePadding(),
@@ -54,7 +71,7 @@ fun ChatScreen(client: ChatClient, profileId: String, pubkey: String, onBack: ()
                         Column {
                             Text(contact?.displayName ?: pubkey.take(8), style = MaterialTheme.typography.titleMedium)
                             Text(
-                                if (contact?.online == true) "online" else "offline",
+                                if (pubkey in typingNow) "typing…" else if (contact?.online == true) "online" else "offline",
                                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -62,7 +79,7 @@ fun ChatScreen(client: ChatClient, profileId: String, pubkey: String, onBack: ()
                 },
             )
         },
-        bottomBar = { Composer { text -> scope.launch { client.send(pubkey, text) } } },
+        bottomBar = { Composer({ picker.launch(arrayOf("*/*")) }, onTyping = { client.typing(pubkey) }) { text -> scope.launch { client.send(pubkey, text) } } },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             when (contact?.trust) {
@@ -78,7 +95,12 @@ fun ChatScreen(client: ChatClient, profileId: String, pubkey: String, onBack: ()
                 Modifier.weight(1f).fillMaxWidth(), state = listState,
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                items(messages, key = { it.id }) { Bubble(it) }
+                items(timeline, key = { it.key }) {
+                    when (it) {
+                        is TimelineItem.Msg -> Bubble(it.m)
+                        is TimelineItem.File -> FileBubble(client.files, it.t)
+                    }
+                }
             }
         }
     }
@@ -136,12 +158,13 @@ private fun StatusMark(s: MessageStatus?) {
 }
 
 @Composable
-fun Composer(onSend: (String) -> Unit) {
+fun Composer(onAttach: () -> Unit, onTyping: () -> Unit = {}, onSend: (String) -> Unit) {
     var text by rememberSaveable { mutableStateOf("") }
     Surface(tonalElevation = 3.dp) {
         Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(8.dp), verticalAlignment = Alignment.Bottom) {
+            IconButton(onClick = onAttach) { Icon(Icons.Filled.Add, "Attach a file") }
             OutlinedTextField(
-                text, { text = it }, Modifier.weight(1f), placeholder = { Text("Message") }, maxLines = 5,
+                text, { text = it; if (it.isNotEmpty()) onTyping() }, Modifier.weight(1f), placeholder = { Text("Message") }, maxLines = 5,
                 shape = RoundedCornerShape(24.dp),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
             )

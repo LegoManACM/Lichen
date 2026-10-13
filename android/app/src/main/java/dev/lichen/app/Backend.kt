@@ -14,7 +14,7 @@ data class OpenChat(val profileId: String, val pubkey: String)
  * The real node (FileSetup); the fakes in dev.lichen.app.fake are for previews.
  */
 object Backend {
-    val setup: LichenSetup = FileSetup()
+    val setup: LichenSetup = FileSetup { android.util.Log.i("Lichen", it) }  // node log lines go to logcat, tag "Lichen"
 
     private var profiles: Profiles? = null
 

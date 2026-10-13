@@ -142,17 +142,20 @@ private fun LichenApp() {
             top.startsWith("ginfo:") -> GroupInfoScreen(c, top.removePrefix("ginfo:"), onBack = ::pop, onGone = { stack = ArrayList() })
             top == "newgroup" -> NewGroupScreen(c, onBack = ::pop, onCreated = { gid -> stack = arrayListOf("group:$gid") })
             top.startsWith("info:") -> InfoScreen(c, top.removePrefix("info:"), onBack = ::pop)
+            top == "requests" -> RequestsScreen(c, onBack = ::pop, onOpenChat = { pk -> push("chat:$pk") })
+            top == "debuglog" -> DebugLogScreen(c, onBack = ::pop)
             top == "people" -> PeopleScreen(c, onBack = ::pop, onOpenChat = { pk ->
                 stack = arrayListOf("chat:$pk")
             })
             top == "profile" -> ProfileScreen(c, onBack = ::pop, onSaveHubs = { name, hubs ->
                 // The profile's client is stopped, its settings saved and a new client opened; the service starts it.
                 scope.launch { profiles.saveSettings(id, Settings(name, hubs)) }
-            }, onDelete = { deleting = infos.firstOrNull { it.id == id } })
+            }, onDelete = { deleting = infos.firstOrNull { it.id == id } }, onDebugLog = { push("debuglog") })
             else -> ContactsScreen(
                 c, infos.firstOrNull { it.id == id }?.name ?: "Lichen", id, onSwitcher = { switcher = true },
                 onOpenChat = { push("chat:$it") }, onNewChat = { push("people") }, onProfile = { push("profile") },
                 onOpenGroup = { push("group:$it") }, onNewGroup = { push("newgroup") },
+                onRequests = { push("requests") },
             )
         }
     }

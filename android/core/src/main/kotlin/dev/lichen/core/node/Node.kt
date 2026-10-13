@@ -41,6 +41,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.abs
@@ -51,8 +52,7 @@ import kotlin.math.abs
 //
 // Handled: hello, announce, lookup, msg, signal, owed, nudge, dm_sync. Made: hello, announce, lookup,
 // forward, msg (with IOU ids), dm_sync, outbox + flush.
-// TODO(phase 2): presence signals (_presence_round), sending typing/read signals, device_sync/vault_put/vault_get
-//   (sync_devices, sync_vault, _state_changed), the keepalive's device round.
+// Phase 2 (Signals.kt, DeviceSync.kt): presence/typing/read signals, device_sync, vault client, the device round.
 // TODO(phase 3): files (file_offer/file_get),
 //   UDP hole punching (punch, _try_direct, direct paths in _req), group_handoff.
 
@@ -89,6 +89,8 @@ class Node(
     var onEvent: ((String, String?, Int) -> Unit)? = null,
     /** Group chats (store/GroupStore.kt); the node side is [groups]. */
     val groupStore: GroupStore = GroupStore(ident, enc),
+    /** Data folder for sync bookkeeping (`linked`, `devsync.json`); null = in memory only (tests). */
+    syncDir: File? = null,
 ) {
     val relays: List<String> = relays.toList()
     /** Hubs are bootstrap addresses too (cli.py): we say hello to them at start. */
@@ -104,6 +106,9 @@ class Node(
     /** Called for each relay client as it is created (before it has attached). */
     var onRelayClient: ((RelayClient) -> Unit)? = null
 
+    /** File offers and chunk requests (phase 3): set by the client; null = unsupported. */
+    @Volatile var files: FileHandler? = null
+
     private val flushing = ConcurrentHashMap.newKeySet<String>()
     private val owedSeen = ConcurrentHashMap<String, MutableSet<String>>()  // IOU item ids already reported, per sender
     private val lastSeen = ConcurrentHashMap<String, Double>()
@@ -115,6 +120,24 @@ class Node(
         sendSealed = { kind, pk, fields -> sendSealed(kind, pk, fields) },
         openSealed = ::openSealedMsg, seen = ::seen, spawn = ::spawn, log = { log(it) },
     ))
+
+    val signals = Signals(this)
+    /** Syncing with our other devices (live and through the hubs' vault). Other code registers its state sections here. */
+    val deviceSync = DeviceSync(ident, enc, device, syncDir, log, scope,
+        hubs = { addrs.filter { it.startsWith(RELAY_PREFIX) }.map { it.substring(RELAY_PREFIX.length) } },
+        siblings = { addrs.filter { !it.startsWith(RELAY_PREFIX) } },
+        onMerged = { _, n -> onEvent?.invoke("devices_synced", null, n) })
+    private val hooked = ArrayList<Pair<((() -> Unit)?) -> Unit, (() -> Unit)?>>()  // (setter, previous hook) to undo on stop
+
+    init {
+        deviceSync.register("trust", StateSection(export = { trust.deviceState() }, merge = { trust.mergeDeviceState(it) }))
+        deviceSync.register("dms", StateSection(export = { dms.deviceState(it) }, merge = { dms.mergeDeviceState(it, ident.pubkey) }))
+        deviceSync.register("outbox", StateSection(export = { outbox.deviceState() }, merge = { outbox.mergeDeviceState(it) }))
+        deviceSync.register("groups", StateSection(export = { groupStore.deviceState(it) }, merge = { groupStore.mergeDeviceState(it).size }))
+        deviceSync.register("phonebook", StateSection(inDigest = false,
+            export = { JsonArray(phonebook.all().filter { it.pubkey != ident.pubkey }.sortedBy { it.pubkey }.map { it.toJson() }) },
+            merge = { st -> phonebook.mergeAll((st as? JsonArray)?.mapNotNull { Record.fromJson(it) }?.filter { it.pubkey != ident.pubkey } ?: emptyList()) }))
+    }
 
     /** addrs: relay:<hub> for each hub, then adopted device addresses. */
     val addrs: List<String>
@@ -142,13 +165,22 @@ class Node(
                 }
             }.awaitAll()
         }
+        // Changes to our own state are news for our other devices.
+        fun chain(get: () -> (() -> Unit)?, set: ((() -> Unit)?) -> Unit) {
+            val prev = get()
+            hooked.add(set to prev)
+            set { prev?.invoke(); deviceSync.stateChanged() }
+        }
+        chain({ dms.onChange }, { dms.onChange = it }); chain({ outbox.onChange }, { outbox.onChange = it }); chain({ trust.onChange }, { trust.onChange = it }); chain({ groupStore.onChange }, { groupStore.onChange = it })
         keepalive = scope.launch { keepaliveLoop() }
         catchUp = scope.launch {
             try {
                 for (addr in bootstrap) join(addr)
                 // Our address may differ from last run; tell everyone we already know about.
                 announce()
-                // TODO(phase 2): sync_devices(), sync_vault().
+                // First with our own other devices (live, then what they left on our hubs).
+                deviceSync.syncDevices()
+                deviceSync.syncVault()
                 groups.syncAll()
                 syncDms()
                 flushOutbox()
@@ -160,7 +192,14 @@ class Node(
         }
     }
 
+    /** Leave a last snapshot on our hubs if something changed since the previous one (call before [stop]). */
+    suspend fun finalSync() {
+        try { withTimeoutOrNull(10_000) { deviceSync.finalPush() } } catch (e: CancellationException) { throw e } catch (e: Exception) { log("final sync failed: $e") }
+    }
+
     fun stop() {
+        for ((set, prev) in hooked) set(prev)
+        hooked.clear()
         keepalive?.cancel()
         for (c in relayClients) c.stop()
         relayClients.clear()
@@ -173,9 +212,15 @@ class Node(
             delay(NODE_KEEPALIVE_MS)
             tick++
             if (tick % OUTBOX_EVERY == 0 && outbox.size() > 0) flushOutbox()
-            // TODO(phase 2): device round every OUTBOX_EVERY ticks; presence round every 2 ticks.
+            if (tick % OUTBOX_EVERY == 0 && relays.isNotEmpty()) spawn { deviceSync.deviceRound() }  // can take a while
+            if (tick % PRESENCE_EVERY == 0) spawn { signals.presenceRound() }
         }
     }
+
+    internal fun launchTask(block: suspend () -> Unit) = spawn(block)
+
+    /** One request to one address (see [req]), for the signal code. */
+    internal suspend fun reqTo(addr: String, pubkey: String?, msg: JsonObject): JsonObject? = req(addr, pubkey, msg)
 
     private fun spawn(block: suspend () -> Unit) {
         scope.launch {
@@ -219,7 +264,7 @@ class Node(
     }
 
     /** Send msg to whoever holds pubkey, looking up a fresher address if the known one is dead. */
-    private suspend fun requestPeer(pubkey: String, msg: JsonObject): JsonObject? {
+    internal suspend fun requestPeer(pubkey: String, msg: JsonObject): JsonObject? {
         val rec = phonebook.get(pubkey)
         val reply = if (rec != null) tryAddrs(rec, msg) else null
         if (reply != null) return reply
@@ -311,7 +356,7 @@ class Node(
     }
 
     /** Sign fields (plus a fresh message id), seal them to pubkey and deliver as [kind]. Returns (result, inner). */
-    private suspend fun sendSealed(kind: String, pubkey: String, fields: Map<String, kotlinx.serialization.json.JsonElement>, id: String? = null): Pair<String?, JsonObject> {
+    internal suspend fun sendSealed(kind: String, pubkey: String, fields: Map<String, kotlinx.serialization.json.JsonElement>, id: String? = null): Pair<String?, JsonObject> {
         val unsigned = JsonObject(mapOf(
             "from" to str(ident.pubkey), "to" to str(pubkey), "ts" to Canonical.now(),
             "id" to str(id ?: newMessageId()),
@@ -327,7 +372,7 @@ class Node(
     }
 
     /** Decrypt and verify a sealed request addressed to us; null if it isn't valid. */
-    private fun openSealedMsg(msg: JsonObject): JsonObject? {
+    internal fun openSealedMsg(msg: JsonObject): JsonObject? {
         val plain = openSealed(enc, msg["sealed"]) ?: return null
         val inner = parseObject(plain.toString(Charsets.UTF_8)) ?: return null
         val from = inner["from"].asString() ?: return null
@@ -359,9 +404,11 @@ class Node(
     }
 
     // --- presence --------------------------------------------------------------------------------
-    // TODO(phase 2): send typing/read signals, _presence_round (only the receiving side exists here).
+    fun sendTyping(pubkey: String) = signals.sendTyping(pubkey)
+    fun sendRead(pubkey: String) = signals.sendRead(pubkey)
+    internal fun markSeen(pubkey: String) = seen(pubkey)
 
-    private fun seen(pubkey: String) {
+    internal fun seen(pubkey: String) {
         val wasOnline = online(pubkey)
         lastSeen[pubkey] = Canonical.nowSeconds()
         if (!wasOnline && trust.trusted(pubkey)) onEvent?.invoke("presence", pubkey, 1)
@@ -447,7 +494,7 @@ class Node(
             refreshRecord()
             spawn { announce() }
         }
-        // TODO(phase 2): spawn { syncDevices() } -- another device of ours is around: compare notes.
+        spawn { deviceSync.syncDevices() }  // another device of ours is around: compare notes
     }
 
     /** They're reachable again: deliver what we owe them and fill gaps in our chat. */
@@ -554,6 +601,11 @@ class Node(
 
             "group_update", "group_leave", "group_msg", "group_sync", "group_handoff" -> return groups.handle(kind!!, msg)
 
+            "device_sync" -> return deviceSync.handle(msg)
+
+            // The phone is never a vault host.
+            "vault_put", "vault_get" -> return failed("this hub doesn't store device snapshots")
+
             "msg" -> {
                 val inner = openSealedMsg(msg) ?: return failed("bad message")
                 val from = inner["from"].asString()!!
@@ -566,7 +618,8 @@ class Node(
                 return OK
             }
         }
-        // TODO(phase 2): device_sync, vault_put, vault_get. (phase 3): file_offer, file_get, group_handoff, punch, forward.
+        if (kind == "file_offer" || kind == "file_get") files?.let { return it.handle(kind, msg) }
+        // TODO(phase 3): file_offer, file_get, punch, forward.
         return failed("unknown type ${kind?.let { "'$it'" } ?: "None"}")
     }
 

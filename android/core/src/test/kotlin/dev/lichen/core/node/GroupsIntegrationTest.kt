@@ -306,4 +306,27 @@ class GroupsIntegrationTest {
             assertNotNull(phone.group(gid))
         } finally { phone.close() }
     }
+
+    @Test
+    fun groupsSyncBetweenOurOwnDevices() = withPeer { py ->
+        val phone = started(py)
+        try {
+            val alice = py.userPk!!
+            py.call("ok", "cmd" to "start_sibling", "keydir" to phone.dir.absolutePath, "name" to "kate")
+            // The PC (Python sibling, same identity) has a group with alice and a message in it.
+            val gid = py.gcreate("sibling", "from my pc", listOf(alice))
+            py.gaccept("user", gid)
+            py.gsend("sibling", gid, "hello from the pc")
+            eventually("the group reaches the phone through device sync") { phone.group(gid)?.pending == false }
+            assertTrue(phone.group(gid)!!.youOwn)
+            eventually("its message too") { phone.groupTexts(gid) == listOf("hello from the pc") }
+            // The phone can speak for the group straight away (it got the epoch keys).
+            blocking { phone.groups.send(gid, "hello from the phone") }.ok()
+            py.awaitGroupMessage("hello from the phone", "user")
+            eventually("both devices agree") {
+                py.call("digest", "cmd" to "digest", "who" to "sibling")["digest"].asString() == phone.client.node()!!.deviceSync.pack().digest
+            }
+            assertEquals(2, py.gtexts("sibling", gid).size)
+        } finally { phone.close() }
+    }
 }
