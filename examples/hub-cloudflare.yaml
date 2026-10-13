@@ -1,0 +1,19 @@
+# A hub behind Cloudflare Tunnel: no port forwarding, your home IP stays hidden.
+#
+#   1. cloudflared tunnel login
+#      cloudflared tunnel create torrentchat
+#      cloudflared tunnel route dns torrentchat chat.example.com
+#      cloudflared tunnel run --url http://localhost:9000 torrentchat
+#      (or, to try it without a domain: cloudflared tunnel --url http://localhost:9000
+#       and use the https://<random>.trycloudflare.com it prints, as wss://<random>.trycloudflare.com)
+#   2. python -m torrentchat --config examples/hub-cloudflare.yaml
+#
+# Friends then use:  relay: wss://chat.example.com
+name: hub
+
+port: 9000                  # stays on localhost; only cloudflared talks to it
+url: wss://chat.example.com # the public address everyone else uses
+
+# Optional: link with other hubs.
+# bootstrap:
+#   - wss://other-hub.example.org

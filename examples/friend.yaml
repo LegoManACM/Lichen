@@ -1,0 +1,7 @@
+# Joining someone's hub. Works behind any home router / mobile data; nothing to configure.
+#   python -m torrentchat --config examples/friend.yaml
+name: alex
+
+# The hub's address, whichever form its owner gave you:
+relay: wss://chat.example.com        # hub behind Cloudflare Tunnel / HTTPS proxy
+# relay: chat.example.com:9000       # hub with an open port (domain or IP)

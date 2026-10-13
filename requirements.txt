@@ -1,0 +1,4 @@
+cryptography>=42
+websockets>=13
+pyyaml>=6
+textual>=0.80

@@ -1,0 +1,12 @@
+# A hub on a machine with a public IP, or a home PC with port 9000 forwarded (TCP *and* UDP).
+#   python -m torrentchat --config examples/hub-open-port.yaml
+name: hub
+
+port: 9000
+bind: 0.0.0.0
+host: chat.example.com      # what others connect to: your public IP, or a (dynamic) DNS name for it
+
+# Optional: link with other hubs so everyone sees everyone.
+# bootstrap:
+#   - other-hub.example.org:9000
+#   - wss://third-hub.example.net
