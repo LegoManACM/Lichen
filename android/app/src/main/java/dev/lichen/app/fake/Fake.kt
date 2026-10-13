@@ -1,6 +1,7 @@
 package dev.lichen.app.fake
 
 import dev.lichen.app.Backend
+import dev.lichen.app.OpenChat
 import dev.lichen.core.api.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -19,6 +20,12 @@ class FakeSetup : LichenSetup {
 
     override fun saveSettings(dataDir: File, settings: Settings) {
         dataDir.mkdirs()
+        // Each profile gets its own cast of fake contacts: the 1st, 2nd, 3rd... profile folder get cast 0, 1, 2...
+        val variant = File(dataDir, "fake-variant")
+        if (!variant.exists()) {
+            val siblings = dataDir.parentFile?.listFiles { f -> File(f, "fake-variant").exists() }?.size ?: 0
+            variant.writeText((siblings % 3).toString())
+        }
         file(dataDir).writeText((listOf(settings.name) + settings.hubs).joinToString("\n"))
     }
 
@@ -29,32 +36,43 @@ class FakeSetup : LichenSetup {
         if (passphrase == "wrong") return SetupResult.Failed("Wrong passphrase.")
         val s = Settings("Afrika", listOf("wss://hub.example.org", "wss://backup.example.net"))
         saveSettings(dataDir, s)
+        File(dataDir, "linked").writeText("")  // like the real one: an imported identity also lives elsewhere
         return SetupResult.Ok(s)
     }
 
     override fun open(dataDir: File): ChatClient = FakeChatClient(
         settings(dataDir) ?: Settings("Me", listOf("wss://hub.example.org")),
+        dataDir.name,
+        File(dataDir, "fake-variant").takeIf { it.exists() }?.readText()?.trim()?.toIntOrNull() ?: 0,
     )
 }
 
-class FakeChatClient(private val settings: Settings) : ChatClient {
+class FakeChatClient(private val settings: Settings, private val profileId: String = "", private val variant: Int = 0) : ChatClient {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val me = "meKEY0000000000000000000000000000000000000"
+    private val me = "meKEY${variant}000000000000000000000000000000000000"
 
     private class Person(val pubkey: String, val name: String, var trust: Trust, var online: Boolean, var nickname: String? = null)
 
-    private val alice = "aLiCe1234567890abcdefghijklmnopqrstuvwxyz0"
-    private val bob = "bOb987654321zyxwvutsrqponmlkjihgfedcba0000"
-    private val carol = "cArOl5555aaaa6666bbbb7777cccc8888dddd99990"
-    private val mal = "mAlLoRy99998888777766665555444433332222110"
+    private fun key(name: String) = (name + "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP").take(43)
+
+    // A different cast per profile, so switching profiles is visible.
+    private val names = listOf(
+        listOf("Alice", "Bob", "Carol", "Dave", "Mallory", "Eve"),
+        listOf("Zoe", "Yuri", "Xena", "Walt", "Trent", "Victor"),
+        listOf("Priya", "Quinn", "Ravi", "Sam", "Oscar", "Peggy"),
+    )[variant.mod(3)]
+    private val alice = key(names[0])
+    private val bob = key(names[1])
+    private val carol = key(names[2])
+    private val mal = key(names[4])
 
     private val everyone = listOf(
-        Person(alice, "Alice", Trust.TRUSTED, true),
-        Person(bob, "Bob", Trust.TRUSTED, false),
-        Person(carol, "Carol", Trust.TRUSTED, false, "Carol (work)"),
-        Person("dAvE1111eeee2222ffff3333gggg4444hhhh55550", "Dave", Trust.TRUSTED, true),
-        Person(mal, "Mallory", Trust.UNKNOWN, false),
-        Person("eVe00001111222233334444555566667777888899", "Eve", Trust.BLOCKED, false),
+        Person(alice, names[0], Trust.TRUSTED, true),
+        Person(bob, names[1], Trust.TRUSTED, false),
+        Person(carol, names[2], Trust.TRUSTED, false, "${names[2]} (work)"),
+        Person(key(names[3]), names[3], Trust.TRUSTED, true),
+        Person(mal, names[4], Trust.UNKNOWN, false),
+        Person(key(names[5]), names[5], Trust.BLOCKED, false),
     )
     private fun person(pk: String) = everyone.first { it.pubkey == pk }
 
@@ -136,14 +154,14 @@ class FakeChatClient(private val settings: Settings) : ChatClient {
         refresh()
         scope.launch {
             delay(600)
-            if (p.name == "Bob") { setStatus(pubkey, m.id, MessageStatus.WAITING); return@launch }
+            if (p.pubkey == bob) { setStatus(pubkey, m.id, MessageStatus.WAITING); return@launch }
             setStatus(pubkey, m.id, MessageStatus.DELIVERED)
             delay(1000)
             // the echo bot reads it and replies
             flow(pubkey).value.filter { it.outgoing && it.status == MessageStatus.DELIVERED }
                 .forEach { setStatus(pubkey, it.id, MessageStatus.READ) }
             val reply = add(pubkey, me, "Echo: $text")
-            if (Backend.currentChat.value != pubkey) unread[pubkey] = (unread[pubkey] ?: 0) + 1
+            if (Backend.currentChat.value != OpenChat(profileId, pubkey)) unread[pubkey] = (unread[pubkey] ?: 0) + 1
             refresh()
             events.tryEmit(ClientEvent.Incoming(contactOf(p), reply))
         }

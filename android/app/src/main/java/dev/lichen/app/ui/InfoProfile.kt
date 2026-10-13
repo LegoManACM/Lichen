@@ -83,7 +83,10 @@ fun InfoScreen(client: ChatClient, pubkey: String, onBack: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProfileScreen(client: ChatClient, onBack: () -> Unit, onSaveHubs: (name: String, hubs: List<String>) -> Unit) {
+fun ProfileScreen(
+    client: ChatClient, onBack: () -> Unit, onSaveHubs: (name: String, hubs: List<String>) -> Unit,
+    onDelete: () -> Unit,
+) {
     val profile by client.profile.collectAsState()
     val hubStatus by client.hubs.collectAsState()
     val scope = rememberCoroutineScope()
@@ -137,6 +140,11 @@ fun ProfileScreen(client: ChatClient, onBack: () -> Unit, onSaveHubs: (name: Str
                 "Sync now retries anything waiting to be sent and catches up on chats from your other devices.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            HorizontalDivider()
+            OutlinedButton(
+                onClick = onDelete,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) { Text("Delete this profile") }
         }
     }
 }

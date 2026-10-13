@@ -26,7 +26,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(client: ChatClient, pubkey: String, onBack: () -> Unit, onInfo: () -> Unit) {
+fun ChatScreen(client: ChatClient, profileId: String, pubkey: String, onBack: () -> Unit, onInfo: () -> Unit) {
     val messages by client.messages(pubkey).collectAsState()
     val people by client.people.collectAsState()
     val contact = people.firstOrNull { it.pubkey == pubkey }
@@ -36,9 +36,10 @@ fun ChatScreen(client: ChatClient, pubkey: String, onBack: () -> Unit, onInfo: (
 
     // While this chat is on screen the user has seen everything in it.
     LaunchedEffect(pubkey, resumed, messages.size) { if (resumed) client.markRead(pubkey) }
-    DisposableEffect(pubkey, resumed) {
-        if (resumed) Backend.currentChat.value = pubkey
-        onDispose { if (Backend.currentChat.value == pubkey) Backend.currentChat.value = null }
+    DisposableEffect(profileId, pubkey, resumed) {
+        val me = dev.lichen.app.OpenChat(profileId, pubkey)
+        if (resumed) Backend.currentChat.value = me
+        onDispose { if (Backend.currentChat.value == me) Backend.currentChat.value = null }
     }
     LaunchedEffect(messages.size) { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1) }
 

@@ -29,7 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun OnboardingScreen(onDone: () -> Unit) {
+fun OnboardingScreen(dataDir: java.io.File, onDone: () -> Unit, onCancel: (() -> Unit)? = null) {
     var mode by rememberSaveable { mutableStateOf("") }
     Scaffold { pad ->
         Column(
@@ -38,17 +38,19 @@ fun OnboardingScreen(onDone: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             when (mode) {
-                "import" -> ImportForm(onBack = { mode = "" }, onDone = onDone)
-                "new" -> NewForm(onBack = { mode = "" }, onDone = onDone)
-                else -> Welcome { mode = it }
+                "import" -> ImportForm(dataDir, onBack = { mode = "" }, onDone = onDone)
+                "new" -> NewForm(dataDir, onBack = { mode = "" }, onDone = onDone)
+                else -> Welcome(onCancel) { mode = it }
             }
         }
     }
 }
 
 @Composable
-private fun Welcome(choose: (String) -> Unit) {
-    Spacer(Modifier.height(32.dp))
+private fun Welcome(onCancel: (() -> Unit)?, choose: (String) -> Unit) {
+    if (onCancel != null) {
+        IconButton(onClick = onCancel) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+    } else Spacer(Modifier.height(32.dp))
     Text("Lichen", style = MaterialTheme.typography.displayMedium, color = MaterialTheme.colorScheme.primary)
     Text(
         "Private chat that belongs to you. Messages are end-to-end encrypted, and there is no account or server that owns your conversations.",
@@ -80,7 +82,7 @@ private fun Back(onBack: () -> Unit, title: String) {
 }
 
 @Composable
-private fun ImportForm(onBack: () -> Unit, onDone: () -> Unit) {
+private fun ImportForm(dataDir: java.io.File, onBack: () -> Unit, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var uri by remember { mutableStateOf<Uri?>(null) }
@@ -131,7 +133,7 @@ private fun ImportForm(onBack: () -> Unit, onDone: () -> Unit) {
                 val result = withContext(Dispatchers.IO) {
                     try {
                         val text = ctx.contentResolver.openInputStream(uri!!)!!.use { it.readBytes().decodeToString() }
-                        Backend.setup.import(Backend.dataDir(ctx), text, pass)
+                        Backend.setup.import(dataDir, text, pass)
                     } catch (e: Exception) {
                         SetupResult.Failed("Couldn't read that file: ${e.message ?: "unknown error"}")
                     }
@@ -153,7 +155,7 @@ private fun ImportForm(onBack: () -> Unit, onDone: () -> Unit) {
 }
 
 @Composable
-private fun NewForm(onBack: () -> Unit, onDone: () -> Unit) {
+private fun NewForm(dataDir: java.io.File, onBack: () -> Unit, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var name by rememberSaveable { mutableStateOf("") }
@@ -192,7 +194,7 @@ private fun NewForm(onBack: () -> Unit, onDone: () -> Unit) {
                 else -> {
                     busy = true; error = null
                     scope.launch {
-                        withContext(Dispatchers.IO) { Backend.setup.create(Backend.dataDir(ctx), Settings(name.trim(), hs)) }
+                        withContext(Dispatchers.IO) { Backend.setup.create(dataDir, Settings(name.trim(), hs)) }
                         busy = false
                         onDone()
                     }
