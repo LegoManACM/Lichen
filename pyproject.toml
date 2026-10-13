@@ -1,14 +1,16 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lichen"
+name = "lichen-chat"
 version = "0.1.0"
 description = "Decentralized, end-to-end encrypted chat: gossiped phonebooks, hubs that store only IOUs, peer-to-peer hole punching, file sharing, terminal UI"
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "LegoManACM" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Afrika McClintock" }]
 keywords = ["chat", "decentralized", "p2p", "encryption", "terminal", "tui"]
 classifiers = [
     "Development Status :: 3 - Alpha",

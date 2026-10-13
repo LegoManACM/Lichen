@@ -21,15 +21,15 @@ Prototype of a decentralized, end-to-end encrypted chat where everyone keeps a p
 
 ## Install
 
-Needs Python 3.11+. Straight from GitHub:
+Needs Python 3.11+. From PyPI:
 
 ```powershell
-pip install git+https://github.com/LegoManACM/Lichen
+pip install lichen-chat
 lichen --init     # writes a starter lichen.yaml; put your name and your hub in it
 lichen            # run it
 ```
 
-(`python -m lichen` works too.)
+(`python -m lichen` works too. For the latest unreleased code: `pip install git+https://github.com/LegoManACM/Lichen`.)
 
 ### From a checkout (for hacking on it)
 
@@ -524,3 +524,8 @@ Over UDP, every request above can also travel on a punched path. Datagrams are J
 - Groups saved by versions before encryption are ignored (contacts are kept).
 - Join times come from the owner's clock and message times from the author's; a big clock difference
   only matters for which ciphertexts are offered during catch-up, not what can be decrypted.
+
+## License
+
+Lichen is licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for
+attribution.
