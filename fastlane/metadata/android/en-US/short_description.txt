@@ -1,1 +1,1 @@
-Decentralized, end-to-end encrypted chat. Your key is your identity.
+Decentralized, end-to-end encrypted chat. Your key is your identity
