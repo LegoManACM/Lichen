@@ -22,8 +22,8 @@ import kotlin.test.assertTrue
 class FilesIntegrationTest {
     private fun <T> withPeer(body: (PyPeer) -> T): T = PyPeer(true).use(body)
 
-    private fun PyPeer.sendFile(from: String, to: String, name: String, size: Int, seed: Int = 1): JsonObject =
-        call("file_sent", "cmd" to "send_file", "from" to from, "to" to to, "name" to name, "size" to size, "seed" to seed, timeoutMs = 60_000)
+    private fun PyPeer.sendFile(from: String, to: String, name: String, size: Int, seed: Int = 1, group: String? = null): JsonObject =
+        call("file_sent", "cmd" to "send_file", "from" to from, "to" to to, "name" to name, "size" to size, "seed" to seed, "group" to group, timeoutMs = 60_000)
 
     private fun Phone.transfer(id: String): FileTransfer? = client.files.transfers.value.firstOrNull { it.id == id }
 
@@ -74,6 +74,39 @@ class FilesIntegrationTest {
             val got = py.call("file_downloaded", "cmd" to "accept_file", "who" to "user", "file_id" to r.fileId, timeoutMs = 60_000)
             assertEquals(sha(content), got["sha256"].asString())
             assertEquals(File(phone.client.files.location(r.fileId)!!.path).length(), content.size.toLong())  // our copy is still served
+        } finally { phone.close() }
+    }
+
+    @Test
+    fun groupFileOffersBothWays() = withPeer { py ->
+        val phone = Phone(listOf(py.hubAddr))
+        try {
+            start(phone)
+            val alice = py.userPk!!
+            val gid = py.gcreate("user", "photos", listOf(phone.pubkey))
+            eventually("invite") { phone.group(gid)?.pending == true }
+            blocking { phone.groups.accept(gid) }.ok()
+            eventually("accepted") { phone.group(gid)?.pending == false && py.gmembers("user", gid).contains(phone.pubkey) }
+
+            // node.send_file(group=...): an offer per member with `group` set; it lands in the group, not the DM.
+            val sent = py.sendFile("user", phone.pubkey, "group.bin", 20_000, group = gid)
+            val id = sent["file_id"].asString()!!
+            eventually("group offer") { phone.transfer(id) != null }
+            val t = phone.transfer(id)!!
+            assertEquals(gid, t.group)
+            assertEquals(alice, t.from)
+            assertEquals(TransferStatus.PENDING, t.status)
+            assertEquals(sent["sha256"].asString(), sha256File(assertNotNull(runBlocking { phone.client.files.download(id) })))
+
+            // And ours to the group: Python files it under the group too.
+            val content = ByteArray(9_000) { it.toByte() }
+            val r = runBlocking { phone.client.files.send({ ByteArrayInputStream(content) }, "mine.bin", content.size.toLong(), listOf(alice), gid) }
+            assertEquals(1, r.delivered)
+            assertEquals(gid, phone.transfer(r.fileId)!!.group)
+            eventually("python to see the group offer") {
+                ((py.call("offers", "cmd" to "offers", "who" to "user")["incoming"] as JsonObject)[r.fileId] as? JsonObject)?.get("group").asString() == gid
+            }
+            assertEquals(sha(content), py.call("file_downloaded", "cmd" to "accept_file", "who" to "user", "file_id" to r.fileId, timeoutMs = 60_000)["sha256"].asString())
         } finally { phone.close() }
     }
 

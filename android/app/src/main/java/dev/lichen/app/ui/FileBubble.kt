@@ -51,7 +51,10 @@ private fun toast(context: Context, text: String) {
 }
 
 /** The user picked [uri] with the system picker: offer it to [pubkey]. */
-fun offerFile(context: Context, client: ChatClient, pubkey: String, uri: Uri) {
+fun offerFile(context: Context, client: ChatClient, pubkey: String, uri: Uri) = offerFile(context, client, listOf(pubkey), null, uri)
+
+/** Offer [uri] to [to]; with [group], it is a group file offer (pass the other members as [to]). */
+fun offerFile(context: Context, client: ChatClient, to: List<String>, group: String?, uri: Uri) {
     val app = context.applicationContext
     appScope.launch {
         var name = uri.lastPathSegment ?: "file"
@@ -63,7 +66,7 @@ fun offerFile(context: Context, client: ChatClient, pubkey: String, uri: Uri) {
             }
         }
         try {
-            val r = client.files.send({ app.contentResolver.openInputStream(uri) ?: throw java.io.IOException("cannot read $name") }, name, size, listOf(pubkey))
+            val r = client.files.send({ app.contentResolver.openInputStream(uri) ?: throw java.io.IOException("cannot read $name") }, name, size, to, group)
             if (r.delivered + r.waiting == 0) toast(app, "Could not send the offer for $name")
         } catch (e: Exception) {
             toast(app, "Could not read $name: ${e.message}")
@@ -108,10 +111,10 @@ private fun saveToDownloads(context: Context, file: File, name: String) {
  * A file in the chat, as the canvas's SlabChat draws it: a card with a square icon tile, the name, a mono
  * size line and (while downloading) a 6dp progress bar along the bottom. An incoming file that's waiting
  * for you or coming in is alert-colored; yours have the accent; finished ones are a plain card. The time
- * and state sit in mono under the card, like a message's.
+ * and state sit in mono under the card, like a message's. [header] goes above the card (a group sender's name).
  */
 @Composable
-fun FileBubble(files: FilesApi, t: FileTransfer) {
+fun FileBubble(files: FilesApi, t: FileTransfer, header: (@Composable () -> Unit)? = null) {
     val context = LocalContext.current
     val p = Slab.colors
     val error = MaterialTheme.colorScheme.error
@@ -131,6 +134,7 @@ fun FileBubble(files: FilesApi, t: FileTransfer) {
         Modifier.fillMaxWidth(), horizontalAlignment = if (t.outgoing) Alignment.End else Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        header?.invoke()
         var card = Modifier.fillMaxWidth(0.78f)
         if (shadow != null) card = card.hardShadow(shadow)
         Column(card.background(ground).slabBorder(border)) {

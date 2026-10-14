@@ -88,7 +88,7 @@ class FakeChatClient(private var settings: Settings, private val profileId: Stri
     override val people = MutableStateFlow<List<Contact>>(emptyList())
     override val events = MutableSharedFlow<ClientEvent>(extraBufferCapacity = 16)
     override val groups: GroupsApi = FakeGroups(me)
-    override val files: dev.lichen.core.api.FilesApi = FakeFiles()
+    override val files: dev.lichen.core.api.FilesApi = FakeFiles(me)
 
     override val typing = MutableStateFlow<Set<String>>(emptySet())
     override val requests = MutableStateFlow<List<Contact>>(emptyList())

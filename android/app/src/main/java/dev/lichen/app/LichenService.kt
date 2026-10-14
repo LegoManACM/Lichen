@@ -90,7 +90,9 @@ class LichenService : Service() {
                 if (e is ClientEvent.Incoming && Backend.currentChat.value != OpenChat(id, e.contact.pubkey)) notifyMessage(id, e)
                 if (e is ClientEvent.GroupIncoming && Backend.currentChat.value != OpenChat(id, "group:${e.group.id}")) notifyGroup(id, e)
                 if (e is ClientEvent.GroupInvite) notifyInvite(id, e)
-                if (e is ClientEvent.FileOffer && e.trusted && Backend.currentChat.value != OpenChat(id, e.transfer.from)) notifyOffer(id, e)
+                if (e is ClientEvent.FileOffer && e.trusted && Backend.currentChat.value != OpenChat(id, offerChat(e))) {
+                    notifyOffer(id, e, e.transfer.group?.let { g -> c.groups.groups.value.firstOrNull { it.id == g }?.name })
+                }
             }
         }
         return Running(c, job)
@@ -182,16 +184,19 @@ class LichenService : Service() {
         NotificationManagerCompat.from(this).notify("$profileId/$key/invite".hashCode(), n)
     }
 
-    private fun notifyOffer(profileId: String, e: ClientEvent.FileOffer) {
+    /** The chat an offer belongs in: the group's for a group offer, else the sender's. */
+    private fun offerChat(e: ClientEvent.FileOffer) = e.transfer.group?.let { "group:$it" } ?: e.transfer.from
+
+    private fun notifyOffer(profileId: String, e: ClientEvent.FileOffer, groupName: String?) {
         if (!canNotify()) return
-        val text = "offered you ${e.transfer.name} (${dev.lichen.core.store.humanSize(e.transfer.size)})"
+        val text = "${if (groupName != null) "offered # $groupName" else "offered you"} ${e.transfer.name} (${dev.lichen.core.store.humanSize(e.transfer.size)})"
         val n = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(e.senderName)
             .setContentText(text)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
-            .setContentIntent(openIntent(profileId, e.transfer.from))
+            .setContentIntent(openIntent(profileId, offerChat(e)))
             .build()
         NotificationManagerCompat.from(this).notify("$profileId/file/${e.transfer.id}".hashCode(), n)
     }

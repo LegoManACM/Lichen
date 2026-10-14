@@ -1,5 +1,7 @@
 package dev.lichen.app.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,6 +21,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -163,23 +166,31 @@ fun LazyListScope.groupRows(
     }
 }
 
-/** A group chat's list: messages with a day chip wherever the day changes. */
-private sealed interface GroupRow {
+/** A group chat's list: messages and file offers, with a day chip wherever the day changes. */
+internal sealed interface GroupRow {
     val key: String
     data class Day(val label: String, override val key: String) : GroupRow
     /** [first]: the first of a run from one author, which gets their avatar and name above it. */
     data class Msg(val m: GroupMessage, val first: Boolean) : GroupRow { override val key: String get() = m.id }
+    data class File(val t: FileTransfer, val first: Boolean) : GroupRow { override val key: String get() = "f:${t.id}" }
 }
 
-private fun groupRowsOf(messages: List<GroupMessage>): List<GroupRow> {
-    val out = ArrayList<GroupRow>(messages.size + 4)
+/** [files] are the group's transfers (FileTransfer.group == the group id); they interleave with [messages] by time. */
+internal fun groupRowsOf(messages: List<GroupMessage>, files: List<FileTransfer> = emptyList()): List<GroupRow> {
+    // (ts, author, row built with "first of a run")
+    val items = (messages.map { m -> Triple(m.ts, m.from) { first: Boolean -> GroupRow.Msg(m, first) as GroupRow } } +
+        files.map { t -> Triple(t.ts, t.from) { first: Boolean -> GroupRow.File(t, first) as GroupRow } }).sortedBy { it.first }
+    val out = ArrayList<GroupRow>(items.size + 4)
     var lastDay: String? = null
     var lastFrom: String? = null
-    for (m in messages) {
-        val day = dayLabel(m.ts)
-        if (day != lastDay) { out += GroupRow.Day(day, "day:$day:${m.id}"); lastDay = day; lastFrom = null }
-        out += GroupRow.Msg(m, m.from != lastFrom)
-        lastFrom = m.from
+    for ((ts, from, row) in items) {
+        val r = row(from != lastFrom)
+        val day = dayLabel(ts)
+        if (day != lastDay) {
+            out += GroupRow.Day(day, "day:$day:${r.key}"); lastDay = day
+            out += row(true)
+        } else out += r
+        lastFrom = from
     }
     return out
 }
@@ -189,7 +200,9 @@ fun GroupChatScreen(client: ChatClient, profileId: String, groupId: String, onBa
     val groups by client.groups.groups.collectAsState()
     val group = groups.firstOrNull { it.id == groupId }
     val messages by client.groups.messages(groupId).collectAsState()
-    val rows = remember(messages) { groupRowsOf(messages) }
+    // Group file offers share the timeline with the messages.
+    val transfers by client.files.transfers.collectAsState()
+    val rows = remember(messages, transfers) { groupRowsOf(messages, transfers.filter { it.group == groupId }) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val snackbar = remember { SnackbarHostState() }
@@ -200,6 +213,12 @@ fun GroupChatScreen(client: ChatClient, profileId: String, groupId: String, onBa
         val me = OpenChat(profileId, groupKey(groupId))
         if (resumed) Backend.currentChat.value = me
         onDispose { if (Backend.currentChat.value == me) Backend.currentChat.value = null }
+    }
+    val context = LocalContext.current
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val g = group ?: return@rememberLauncherForActivityResult
+        val others = g.members.filter { !it.isYou }.map { it.pubkey }
+        if (uri != null && others.isNotEmpty()) offerFile(context, client, others, groupId, uri)
     }
     LaunchedEffect(rows.size) { if (rows.isNotEmpty()) listState.animateScrollToItem(rows.size - 1) }
 
@@ -230,7 +249,10 @@ fun GroupChatScreen(client: ChatClient, profileId: String, groupId: String, onBa
             })
         },
         bottomBar = {
-            if (group != null && !group.pending) Composer { text ->
+            if (group != null && !group.pending) Composer({
+                if (group.members.any { !it.isYou }) picker.launch(arrayOf("*/*"))
+                else scope.launch { snackbar.showSnackbar("No one else is in this group yet") }
+            }) { text ->
                 scope.launch {
                     val r = client.groups.send(groupId, text)
                     if (r is GroupResult.Failed) snackbar.showSnackbar(r.reason)
@@ -259,6 +281,12 @@ fun GroupChatScreen(client: ChatClient, profileId: String, groupId: String, onBa
                     when (r) {
                         is GroupRow.Day -> DayChip(r.label)
                         is GroupRow.Msg -> GroupBubble(r.m, r.first)
+                        is GroupRow.File -> FileBubble(
+                            client.files, r.t,
+                            header = if (r.t.outgoing || !r.first) null else {
+                                { AuthorHeader(r.t.from, group.members.firstOrNull { it.pubkey == r.t.from }?.name ?: r.t.from.take(8)) }
+                            },
+                        )
                     }
                 }
             }
@@ -269,22 +297,24 @@ fun GroupChatScreen(client: ChatClient, profileId: String, groupId: String, onBa
 /** The DM bubble, with the sender's avatar and name above the first of a run of someone else's messages. */
 @Composable
 private fun GroupBubble(m: GroupMessage, first: Boolean) {
-    val p = Slab.colors
-    val header: (@Composable () -> Unit)? = if (m.outgoing || !first) null else {
-        {
-            Row(
-                Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                SquareAvatar(initialOf(m.authorName), avatarTint(m.from), 20.dp)
-                Text(
-                    m.authorName.uppercase(), fontFamily = Slab.mono, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
-                    letterSpacing = 0.08.em, color = p.subtle, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
+    val header: (@Composable () -> Unit)? = if (m.outgoing || !first) null else { { AuthorHeader(m.from, m.authorName) } }
     SlabBubble(m.text, m.ts, m.outgoing, header = header)
+}
+
+/** The sender's avatar and name above the first of a run of someone else's messages or files. */
+@Composable
+private fun AuthorHeader(pubkey: String, name: String) {
+    val p = Slab.colors
+    Row(
+        Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        SquareAvatar(initialOf(name), avatarTint(pubkey), 20.dp)
+        Text(
+            name.uppercase(), fontFamily = Slab.mono, fontWeight = FontWeight.SemiBold, fontSize = 11.sp,
+            letterSpacing = 0.08.em, color = p.subtle, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 // --- new group ---------------------------------------------------------------------------------------
