@@ -2,6 +2,7 @@ package dev.lichen.app.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -196,20 +197,23 @@ private fun Bubble(m: ChatMessage) = SlabBubble(m.text, m.ts, m.outgoing, m.stat
 
 /**
  * A message: mine filled accent with a hard shadow on the right, theirs card-filled with an edge border on
- * the left, the time (and for mine, [status]) in muted mono underneath. [header] goes above the bubble
- * (the sender in a group).
+ * the left, and for mine [status] in muted mono underneath. Tapping the bubble shows (or hides again) the
+ * time it was sent next to the status. [header] goes above the bubble (the sender in a group).
  */
 @Composable
 internal fun SlabBubble(
     text: String, ts: Double, out: Boolean, status: MessageStatus? = null, header: (@Composable () -> Unit)? = null,
 ) {
     val p = Slab.colors
+    var showTime by rememberSaveable { mutableStateOf(false) }
     Column(
         Modifier.fillMaxWidth(), horizontalAlignment = if (out) Alignment.End else Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         header?.invoke()
-        val bubble = Modifier.widthIn(max = 300.dp).let {
+        val bubble = Modifier.widthIn(max = 300.dp)
+            .clickable(remember { MutableInteractionSource() }, indication = null, onClickLabel = if (showTime) "Hide time" else "Show time") { showTime = !showTime }
+            .let {
             if (out) it.hardShadow(p.shadow).background(p.accent).padding(horizontal = 13.dp, vertical = 10.dp)
             else it.background(p.card).slabBorder(p.edge).padding(horizontal = 12.dp, vertical = 9.dp)
         }
@@ -217,15 +221,16 @@ internal fun SlabBubble(
             text, bubble, fontSize = 15.sp, lineHeight = 21.sp,
             fontWeight = if (out) FontWeight.Medium else FontWeight.Normal, color = if (out) p.onAccent else p.text,
         )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(clockTime(ts), fontFamily = Slab.mono, fontSize = 10.sp, color = p.muted)
-            if (out) StatusMark(status)
+        val mark = status.takeIf { out }
+        if (showTime || mark != null) Row(verticalAlignment = Alignment.CenterVertically) {
+            if (showTime) Text(clockTime(ts), fontFamily = Slab.mono, fontSize = 10.sp, color = p.muted)
+            StatusMark(mark, afterTime = showTime)
         }
     }
 }
 
 @Composable
-private fun StatusMark(s: MessageStatus?) {
+private fun StatusMark(s: MessageStatus?, afterTime: Boolean) {
     val p = Slab.colors
     val (label, color) = when (s) {
         MessageStatus.SENDING -> "SENDING" to p.muted
@@ -235,7 +240,7 @@ private fun StatusMark(s: MessageStatus?) {
         MessageStatus.FAILED -> "FAILED" to MaterialTheme.colorScheme.error
         null -> return
     }
-    Text(" · $label", fontFamily = Slab.mono, fontSize = 10.sp, color = color)
+    Text(if (afterTime) " · $label" else label, fontFamily = Slab.mono, fontSize = 10.sp, color = color)
 }
 
 @Composable
