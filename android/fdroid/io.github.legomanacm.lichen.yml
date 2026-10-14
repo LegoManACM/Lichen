@@ -18,7 +18,7 @@ Binaries: https://github.com/LegoManACM/Lichen/releases/download/android-v%v/lic
 Builds:
   - versionName: 0.1.0
     versionCode: 1
-    commit: android-v0.1.0
+    commit: c461fcfa834b35e7449a4af61345e9268fdef325
     subdir: android/app
     gradle:
       - yes
