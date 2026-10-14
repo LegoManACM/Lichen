@@ -13,12 +13,12 @@ AutoName: Lichen
 RepoType: git
 Repo: https://github.com/LegoManACM/Lichen.git
 # Our signed APK from GitHub Releases; F-Droid ships it with our signature if its own build matches.
-Binaries: https://github.com/LegoManACM/Lichen/releases/download/v%v/lichen-%v.apk
+Binaries: https://github.com/LegoManACM/Lichen/releases/download/android-v%v/lichen-%v.apk
 
 Builds:
   - versionName: 0.1.0
     versionCode: 1
-    commit: v0.1.0
+    commit: android-v0.1.0
     subdir: android/app
     gradle:
       - yes
@@ -26,6 +26,6 @@ Builds:
 AllowedAPKSigningKeys: 014bc633326492385d2f45b7da121a72b07abe2dbd1ea6de21655483d37dfdc8
 
 AutoUpdateMode: Version
-UpdateCheckMode: Tags ^v[0-9.]+$
+UpdateCheckMode: Tags ^android-v[0-9.]+$
 CurrentVersion: 0.1.0
 CurrentVersionCode: 1
