@@ -1,7 +1,7 @@
 # Draft for https://gitlab.com/fdroid/fdroiddata (metadata/io.github.legomanacm.lichen.yml).
 # Copy it there when opening the merge request; keep it here so it stays in step with the build.
 Categories:
-  - Internet
+  - Messaging
 License: Apache-2.0
 AuthorName: LegoManACM
 SourceCode: https://github.com/LegoManACM/Lichen
