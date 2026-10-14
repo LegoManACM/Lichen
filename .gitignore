@@ -11,3 +11,8 @@ lichen.me
 build/
 dist/
 *.egg-info/
+
+# Android release signing (never commit the key or its passwords)
+*.jks
+*.keystore
+android/keystore.properties

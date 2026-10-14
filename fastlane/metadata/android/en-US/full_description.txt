@@ -1,0 +1,24 @@
+<p>Lichen is a decentralized chat where everything is end-to-end encrypted and there is no central account server. You are your key: no phone number, no email, no sign-up.</p>
+
+<p><b>How it works</b></p>
+<ul>
+<li>Every device has its own keys. Your public key is who you are, and every contact record is signed by the key it describes, so nobody can impersonate you.</li>
+<li>Peers keep a phonebook of everyone they know and gossip address changes to each other.</li>
+<li>Hubs are just nodes at a public address. They introduce peers so they can talk directly, and relay for anyone whose network won't allow that. Relays only ever see ciphertext.</li>
+<li>You can run your own hub (it's the same open-source program), and hubs can federate with each other.</li>
+</ul>
+
+<p><b>Features</b></p>
+<ul>
+<li>One-to-one and group chats</li>
+<li>File sharing</li>
+<li>Add contacts by QR code or by key</li>
+<li>Message requests from strangers, which you can switch off</li>
+<li>Several profiles on one phone</li>
+<li>Import an identity from the Lichen desktop app</li>
+<li>Twelve colour palettes</li>
+</ul>
+
+<p>Lichen is an early prototype. The protocol may still change.</p>
+
+<p>To receive messages while the app is closed, Lichen keeps a connection to your hub in a foreground service. It does not use Google services or any push provider.</p>
